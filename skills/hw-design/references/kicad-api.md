@@ -98,6 +98,27 @@ fp.Flip(pt(x, y), FLIP_TB)
 ```
 General rule: **never pass a bare bool to a KiCad API that may have grown an enum.** Prefer `getattr(pcbnew, "SOME_ENUM_MEMBER", <old-literal>)`.
 
+### Trap: the composed rotate-then-flip transform, which is in no documentation
+**Never derive a pad side. Place the part, read `pad_xy()` back, and route from what the footprint says.** That is the rule; the transform below is why you cannot do it in your head.
+
+The generator idiom is `SetOrientationDegrees(θ)` and **then** `Flip(pos, FLIP_TB)`, which composes to
+
+```
+local (lx, ly)  ->  ( lx·cosθ + ly·sinθ ,  +(lx·sinθ − ly·cosθ) )
+```
+
+i.e. **the rotation first, then a mirror in y — not the other way round.** This is what decides which board direction a footprint's pad 1 ends up facing, and it is nowhere in the KiCad docs. Cost of reasoning it out backwards: two parts placed on the belief that "rot 270 puts pad 1 north" — it puts it south — paid for with 2 `shorting_items` + 2 `solder_mask_bridge` violations, which the DRC caught instantly.
+
+The useful distinction: that generator already obeyed "read it back" for **routing**. The failure was applying human reasoning to a **placement** decision — which rotation to pass — which is the same trap one level up, and DRC is the only thing that catches it. See `electronics.md` §8 for the mirroring invariants this sits under.
+
+### Trap: a generated board is not byte-stable, and cannot be
+`pcbnew` mints a fresh random KIID for every item it creates, and `SaveBoard()` writes footprints in its own internal order rather than insertion order. So two runs of an **unchanged** generator differ in thousands of lines while describing identical copper (measured on hexpad: 5744 of 10488 lines differed). `diff` and a plain checksum therefore report a false failure **every time**, and "regeneration is deterministic" — part of the phase-4 contract — has to be checked on the **canonical form**: drop every `uuid`/`tstamp`, sort the remaining lines, hash. What survives is every coordinate, layer, net, width, drill, property and filled-zone outline — i.e. everything a fab, a DRC or an enclosure generator reads.
+
+```bash
+python3 scripts/kicad_digest.py BOARD.kicad_pcb
+```
+Pure stdlib, so it runs under the **system** python and needs no `pcbnew`. Equal digests across a wipe-and-rebuild is the strongest determinism claim this toolchain supports; a real regression — a moved lane, a changed fill, a dropped footprint — changes the digest immediately.
+
 ### Trap: `SaveBoard()` overwrites the sibling `.kicad_pro`
 `pcbnew.SaveBoard()` rewrites `<stem>.kicad_pro` from pcbnew's own defaults, wiping whatever the project scaffolder wrote (net classes, rule severities, min clearances). Therefore: **anything the DRC needs must be patched into the `.kicad_pro` *after* the save**, as an explicit post-step:
 
@@ -122,6 +143,17 @@ Keep the patch table small and every entry commented with its justification — 
 Fab-justified relaxations go in a generated `<project>.kicad_dru` written by the same `patch_project()` step, one rule with its justification in a comment. Do not relax a global minimum to fix a local geometry problem.
 
 Custom rules also run the other way: **fab capability floors**. KiCad's stock DRC is looser than real fabs in places (no absolute clearance floor at all, 0.10 mm via annular vs typical 0.15, 0.25 mm hole-to-copper and hole-to-hole vs typical 0.28/0.45 for plated holes), so a default-settings pass is not proof of manufacturability. Encode `max(design floor, fab floor)` per spec — never loosen your own floors to fab minimums. Unconditional floors go in the project `rules` dict via `patch_project()`; anything that differs by pad type goes in the `.kicad_dru`, because **the project `min_hole_clearance` knob is hole-blind** — it cannot distinguish plated from unplated holes, and fabs quote them differently (applying a PTH number globally cost z_board 148 false NPTH violations). Condition on `A.Pad_Type`; vias carry no `Pad_Type`, so PTH-conditioned rules correctly skip them. Current numbers per fab live in `kb/fabs/`.
+
+### Demoting a DRC rule — the enumeration discipline
+Severity overrides are per **rule**, not per item pair, so demoting one disables it **board-wide**. Meanwhile a single locked geometry decision produces a whole finding *class*: on hexpad, "the display mounts above the module" put a 36 × 14 mm display courtyard over the MCU and produced **25 findings in two rule classes** — 1 × `courtyards_overlap` and 24 × `pth_inside_courtyard`, one per through-hole pad of the overlapped footprint. These two rules come in pairs, and the pad-wise one **scales with pad count**, so a front-face overlap multiplies.
+
+A defensible demotion is four steps:
+1. Run `--severity-all` and **enumerate the whole finding set** the override will silence.
+2. Prove the set is **exhaustively** the sanctioned cause (hexpad: 24/24 findings name `Footprint DISP1`).
+3. Record that proof **next to the override** — in the `patch_project()` table or the `.kicad_dru` comment — not in a commit message.
+4. Prefer a **scoped `.kicad_dru` rule over a global severity** whenever the condition can be written.
+
+A demotion whose finding set you have not enumerated is not a demoted rule, it is a rule you have switched off.
 
 ### Trap: refs without a numeric suffix poison the CLI annotation check
 Every reference a generator emits must end in a digit (`SW_PWR1`, not `SW_PWR`). A digitless ref makes every `kicad-cli sch` invocation print `schematic has annotation errors` forever — masking real annotation problems — and if anyone runs Annotate in the GUI, KiCad silently renames the part (`SW_PWR` → `SW23`), breaking every generator constant and BOM note keyed on the old ref.

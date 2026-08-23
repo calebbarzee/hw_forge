@@ -7,6 +7,12 @@ board, gated fab outputs and a verified printed case entirely by code
 generation. Anything below that reads like process advice is process that
 already ran.
 
+It has since run **forwards** as well as backwards: the hexpad dry run
+(`docs/DRYRUN-HEXPAD.md`) built a different board with a different topology from
+this repo alone, reached every gate, and logged 49 shortfalls — 44 of which are
+fixed in v0.2. z_board is where the pipeline came from; hexpad is the evidence
+that it transfers.
+
 ## 1. Three asset classes, three containers
 
 The run produced three kinds of reusable thing, and they want different homes.
@@ -39,7 +45,10 @@ Pre-plugin use still works: symlink `skills/hw-design` into `~/.claude/skills/`.
 hw_forge/
 ├── .claude-plugin/plugin.json
 ├── README.md
-├── docs/ARCHITECTURE.md            # this file
+├── docs/
+│   ├── ARCHITECTURE.md             # this file
+│   ├── BACKLOG.md                  # deferred work, with why and what closes it
+│   └── DRYRUN-HEXPAD.md            # the validation verdict for the dry run
 ├── skills/hw-design/
 │   ├── SKILL.md                    # the orchestrator: phases, gates, protocols
 │   └── references/
@@ -55,11 +64,14 @@ hw_forge/
 │   ├── kicad_fab.py                # gerbers/drill/pos/BOM + assertion profile
 │   ├── kicad_geom.py               # s-expr parser: outline, holes, footprint positions
 │   ├── kicad_scaffold.py           # project + lib-tables + .kicad_pro severity patching
+│   ├── kicad_digest.py             # canonical KIID-free digest: the determinism check
 │   ├── case_verify.py              # numeric interference-check runner
+│   ├── gerber_diff.py              # are two exports geometrically identical?
 │   └── report.py                   # one-line summary of any kicad-cli JSON report
 ├── templates/
 │   ├── design.py                   # logical-design skeleton
 │   ├── Makefile                    # the gate-loop contract
+│   ├── .gitignore                  # what a generated hardware repo keeps
 │   └── prompts/                    # role prompts with locked-decision slots
 ├── commands/                       # single-phase slash entry points
 │   ├── hw-preflight.md  hw-validate.md  hw-research.md
@@ -87,9 +99,9 @@ previous gate passes *as re-verified by the orchestrator*, not as reported.
 | 0 | **Spec lock** | a device idea | orchestrator + user | a decisions doc: locked choices verbatim, plus numbered open questions each carrying a recommendation. User answers or explicitly delegates every one. |
 | 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest for each vendored asset; pin tables verified against two independent sources; zero hand-authored geometry |
 | 2 | **Logical design** | resolved part list | agent | `design.py` imports clean under *both* the system Python and the CAD Python; nets, pin maps and topology all derive from it |
-| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0; power-design decision record written (a decision doc, not a citation list) |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity**, 0 unconnected, zones filled headlessly inside the generator |
-| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass (every artifact non-empty, hole counts and placement counts as specified); renders eyeballed |
+| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py --sch-only`, exit 0 — a board-less project reports DRC as SKIPPED); power-design decision record written (a decision doc, not a citation list) |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity**, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical digest |
+| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass (every artifact non-empty, hole counts, the **per-side** placement split, declared-empty layers); a manifest stamping the export's provenance; renders eyeballed |
 | 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything above green | agent + orchestrator | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
 
@@ -163,17 +175,17 @@ Where each piece of hw_forge comes from in z_board, and its state.
 | the run's wave structure and agent prompts | `references/orchestration.md` | parameterize | **done** |
 | `PIPELINE.md` | `docs/ARCHITECTURE.md` | fold resolved decisions into the body | **done** |
 | — | `commands/*.md`, `agents/*.md` | new: single-phase entry points, role definitions with model policy | **done** |
-| `kicad/report.py` | `scripts/report.py` | none — already generic | in flight |
-| `kicad/Makefile` | `templates/Makefile` | strip project names; parameterize the project list | in flight |
-| `kicad/fabcheck.py`, `kicad/mkbom.py` | `scripts/kicad_fab.py` | merge; assertions become a per-project profile file | in flight |
-| `gen_pcb.py`'s zone-fill and severity-patch blocks | `scripts/kicad_zonefill.py`, `scripts/kicad_scaffold.py` | extract from the generator into standalone tools | in flight |
-| the case agent's s-expr parser and `verify()` | `scripts/kicad_geom.py`, `scripts/case_verify.py` | genericize check registration | in flight |
-| `kicad/design.py`'s shape | `templates/design.py` | reduce to skeleton plus comments | in flight |
-| `kicad-agent-workflow.md`, `NOTES.md`'s KiCad-10 sections | `references/kicad-api.md` | rewrite as rules; strip project coordinates | in flight |
-| `POWER.md`, `NOTES.md`'s routing and mirroring sections | `references/electronics.md` | rewrite as rules and decision trees | in flight |
-| `case/README.md`, the case agent's report | `references/mechanical.md`, `references/batteries.md` | rewrite as formulas and tables | in flight |
-| keyboard-specific facts from all of the above | `kb/` cards | one card per fact, tagged by domain | in flight |
-| — | `scripts/preflight.py` | new: the smoke-test rule made executable | in flight |
+| `kicad/report.py` | `scripts/report.py` | none — already generic | **done** |
+| `kicad/Makefile` | `templates/Makefile` | strip project names; parameterize the project list | **done** |
+| `kicad/fabcheck.py`, `kicad/mkbom.py` | `scripts/kicad_fab.py` | merge; assertions become a per-project profile file | **done** |
+| `gen_pcb.py`'s zone-fill and severity-patch blocks | `scripts/kicad_zonefill.py`, `scripts/kicad_scaffold.py` | extract from the generator into standalone tools | **done** |
+| the case agent's s-expr parser and `verify()` | `scripts/kicad_geom.py`, `scripts/case_verify.py` | genericize check registration | **done** |
+| `kicad/design.py`'s shape | `templates/design.py` | reduce to skeleton plus comments | **done** |
+| `kicad-agent-workflow.md`, `NOTES.md`'s KiCad-10 sections | `references/kicad-api.md` | rewrite as rules; strip project coordinates | **done** |
+| `POWER.md`, `NOTES.md`'s routing and mirroring sections | `references/electronics.md` | rewrite as rules and decision trees | **done** |
+| `case/README.md`, the case agent's report | `references/mechanical.md`, `references/batteries.md` | rewrite as formulas and tables | **done** |
+| keyboard-specific facts from all of the above | `kb/` cards | one card per fact, tagged by domain | **done** |
+| — | `scripts/preflight.py` | new: the smoke-test rule made executable | **done** |
 
 `design.py` and `gen_pcb.py` themselves stay **project code**. hw_forge ships the
 skeleton and the tools, not a universal generator: board topologies differ too
@@ -184,22 +196,39 @@ write.
 
 1. **Scaffold + extraction.** Repo, plugin manifest, scripts and templates moved
    per §5, first-pass reference docs from existing material, process layer
-   written. z_board is the source. *(current)*
+   written. z_board is the source. **done**
 2. **Genericize + self-test.** Run the scripts against z_board from the outside —
    the repo becomes hw_forge's regression fixture, and `kicad_gate.py` must
    reproduce its 0 / 0 / 0 / 0 on `proto`, `left`, `right` and `combo`.
+   **done**, and it is now run as a regression gate before and after every
+   change to `scripts/`.
 3. **Dry run.** A fresh session designs a **6-key macro pad with a nice!view
    display on a nice!nano** using only the skill. Deliberately trivial: nothing
    about it should be hard, so everything the session has to ask about or
    rediscover is a gap in the skill, a missing knowledge card, or a script bug.
-   Every gap gets folded back in. The macro pad also exercises the whole spine
-   once — matrix or direct-wire keys, an SPI/I²C display peripheral, a module on
-   sockets, a battery, an enclosure with a plate and inserts — at a scale where a
-   wrong answer costs minutes.
-4. **Harden.** Agent definitions refined from what the dry run exposed, plugin
-   packaging, and the migration path off SWIG `pcbnew` onto the IPC API
-   (`kicad-python` / `kipy`), which is forced work: SWIG is deprecated in KiCad 9
-   and removed in 11.
+   **done — see `docs/DRYRUN-HEXPAD.md`.** hexpad reached ERC 0 / DRC 0 with
+   parity / 0 unconnected on both the board and its proto slice, an asserted
+   21-file fab package, and 215 passing enclosure checks; a user-directed **rev
+   2** (module and display rotated 90°, board shrunk, case rebuilt) then reached
+   the same gates at 239 enclosure checks, which tested whether a *change* can
+   be trusted rather than whether a board can be designed. Together they logged
+   **60 gaps**: 55 fixed in v0.2.x, 4 deferred (`docs/BACKLOG.md`), 1
+   works-as-intended. None
+   of the 49 was a design failure — every one was friction, a missing statement,
+   or a tool that could not express something true. The macro pad exercised the
+   whole spine once (direct-wire keys, an SPI display peripheral, a module on
+   sockets, a battery, an enclosure with a plate and inserts) at a scale where a
+   wrong answer cost minutes.
+4. **Harden.** Agent definitions refined from what the dry run exposed —
+   **done for the dry run's findings** (per-phase report templates, the
+   `design.py` round-trip carve-out, the research doctrine's third outcome, the
+   stated project layout) — then plugin packaging, including slash-command
+   reachability from a project the plugin is not installed into
+   (`docs/BACKLOG.md` B4). *(current)*
+5. **Port off SWIG.** The migration path from SWIG `pcbnew` onto the IPC API
+   (`kicad-python` / `kipy`). Forced work: SWIG is deprecated in KiCad 9 and
+   removed in 11. Keep generators structured so the geometry layer is pure
+   python and only a thin adapter touches `pcbnew` — that adapter is the port.
 
 ## 7. Interface contracts
 
@@ -209,14 +238,25 @@ change independently.
 
 ```
 python3 scripts/preflight.py [--project DIR]
-python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
+python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME] [--sch-only]
+                                          [--require-board]
 KIPY   scripts/kicad_zonefill.py BOARD.kicad_pcb [-o OUT]
 python3 scripts/kicad_fab.py PROJECT_DIR -o OUTDIR [--profile PROFILE.json]
 python3 scripts/kicad_geom.py BOARD.kicad_pcb [--json]
-python3 scripts/kicad_scaffold.py DIR NAME
+python3 scripts/kicad_digest.py BOARD.kicad_pcb [--compare A B] [--expect SHA1]
+python3 scripts/kicad_scaffold.py DIR NAME | DIR --repatch
 python3 scripts/case_verify.py CHECKS.py
+python3 scripts/gerber_diff.py OLD_FAB_DIR NEW_FAB_DIR
 python3 scripts/report.py FILE.json
 ```
+
+Two contract notes the dry run added. `kicad_gate.py` treats a **missing board
+as a skipped check, not a failed one** (`--sch-only`, or auto-detected), so the
+schematic phase's gate can pass in the phase that names it; a partial gate always
+prints an explicit `PARTIAL` verdict, and `--require-board` restores the hard
+failure. `kicad_fab.py` **refuses to start when its profile resolves inside the
+output directory**, because it wipes that directory and would otherwise delete
+its own configuration mid-run and still exit 0.
 
 `KIPY` is KiCad's bundled Python, needed wherever `pcbnew` is imported. Scripts
 discover `kicad-cli` and `pcbnew` themselves — platform defaults, including

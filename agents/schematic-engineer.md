@@ -29,8 +29,21 @@ here multiplies.
 1. `design.py` imports clean under **both** the system Python and the CAD-side
    Python (KiCad's bundled interpreter). It is imported by both; if it only works
    under one, the pipeline breaks at the next phase.
-2. **ERC 0** at error severity, verified by running
-   `python3 scripts/kicad_gate.py PROJECT_DIR` yourself — not by inspection.
+2. **ERC 0** at error severity, verified by running the gate yourself — not by
+   inspection:
+
+   ```bash
+   python3 scripts/kicad_gate.py PROJECT_DIR --sch-only
+   ```
+
+   That is the phase-3 gate, and it must **exit 0 with ERC ok**. At the end of a
+   correct phase 3 there is no `.kicad_pcb` yet; `--sch-only` reports DRC as
+   SKIPPED, and a project with a schematic and no board is auto-detected the same
+   way, so the bare invocation also exits 0 rather than failing on a missing
+   board. Two deviations are therefore avoidable and neither is acceptable:
+   reporting a red gate as green because the failing check "was only the board",
+   and dropping to a bare `kicad-cli` invocation because the named command
+   appeared to fail.
 3. A **power decision record** committed in the project: rail topology, gating,
    logic-level reasoning, decoupling policy, current budget against the actual
    supply limit, and a table of protections *considered and rejected* with why.

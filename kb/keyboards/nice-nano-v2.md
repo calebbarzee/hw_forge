@@ -1,8 +1,8 @@
 ---
 domain: keyboards/mcu
-tags: [nice-nano, nrf52840, pro-micro, pinout, nrf-port, ext-power, me6217, ldo, charger, usb-overhang, socket-stack]
-source: z_board v0.4 (kicad/design.py MCU_HEADER + NRF_PORT, kicad/POWER.md, case/zboard_case.py)
-date: 2026-08-22
+tags: [nice-nano, nrf52840, pro-micro, pinout, nrf-port, ext-power, me6217, ldo, charger, usb-overhang, socket-stack, courtyard, enclosure, usb-notch, pinctrl, pinmux, uart0, i2c0, spi1, nfc, p0-29]
+source: z_board v0.4 (kicad/design.py MCU_HEADER + NRF_PORT, kicad/POWER.md, case/zboard_case.py); hexpad phase-6 (case/hexpad_case.py, 239-check verify() pass (board rev 2)); hexpad phase-7 harvest (nice_nano-pinctrl.dtsi, nice_nano.dts)
+date: 2026-08-23
 confidence: verified-in-cad
 ---
 
@@ -50,8 +50,44 @@ devicetree needs the right-hand column.
 | D7 | P0.11 | | D20 | P0.29 |
 | D8 | P1.04 | | D21 | **P0.31** |
 
-D9/D10 are on the same castellations as NFC (P0.09/P0.10) — leave free unless you accept
-disabling NFC in devicetree.
+**The NFC pads are P0.09 and P0.10**, which on this module are the pins labelled **D10** and
+**D16** (read them out of the table above, do not recall them). Leave those two free unless
+you accept disabling NFC in devicetree. **D9 is P1.06 and is unaffected.**
+
+> *Correction, 2026-08-22 (hexpad phase 3, which went to the ZMK source rather than trusting
+> this prose):* this line previously read "D9/D10 are on the same castellations as NFC
+> (P0.09/P0.10)" — wrong in both directions against the card's own table. A pin map trusting
+> it would have skipped a free pin (D9) and used an NFC pin (D16). State pin roles in port
+> terms and derive the label; see `kb/README.md`, "Pin-role facts — port first".
+
+## Default peripheral pinmux — the enumeration, done once
+
+`zmk-electrical.md` states the rule: before locking a pin map, list every default peripheral
+pinmux on the target board and check it against the matrix and the chain — free GPIOs are not
+the constraint, peripheral defaults are. This is the **answer** for nice!nano v2, so no
+project re-derives it from the firmware tree. Source:
+`zmk/app/module/boards/nicekeyboards/nice_nano/nice_nano-pinctrl.dtsi` and `nice_nano.dts`.
+
+| Instance | Signal | Port | Label |
+|---|---|---|---|
+| `uart0` | RX | P0.08 | D0 |
+| `uart0` | TX | P0.06 | D1 |
+| `i2c0` | SDA | P0.17 | D2 |
+| `i2c0` | SCL | P0.20 | D3 |
+| `spi1` | SCK | P1.13 | D15 |
+| `spi1` | MOSI | P0.10 | D16 |
+| `spi1` | MISO | P1.11 | D14 |
+| blue LED | — | P0.15 | none — not on a castellation |
+| ext-power | LDO enable | P0.13 | none — ZMK `EXT_POWER` |
+
+`spi0`, `spi2` and `spi3` have **nothing** until a shield or board overlay defines them —
+which is exactly why an addressable-LED chain gets its own `&spi3` and a nice!view claims
+`spi0` (`zmk-electrical.md`, `nice-view-display.md`).
+
+**Trap: P0.29 (D20) has no default peripheral role at all.** A claim in one project's
+resource doc that D20 was "`spi1`'s default SCK" was wrong — `spi1`'s SCK is P1.13 (D15).
+hexpad used P0.29 for a key GPIO after checking the firmware. This is a fixed property of a
+very common module, not a per-project fact: enumerate once here, cite it, do not re-derive.
 
 ## Rails — what the module already provides
 
@@ -103,6 +139,72 @@ cell ─ B+ (pad 24, "RAW") ─┬─ Li-Po charger, USB-C sourced, ~100 mA
 - The module stands off on 2.54 mm headers, so a low part (e.g. a slide switch) may be
   deliberately nested under it between the two pad columns, across the 15.24 mm corridor.
   Expect `npth_inside_courtyard` findings; demote that specific rule with a justification.
+
+### The courtyard is SMALLER than the module — 2.02 mm smaller
+
+A 2×12 footprint's courtyard is normally drawn around the **pad grid**, not the module
+body. Measured on hexpad's `MCU_nice_nano_v2`: courtyard **18.28 × 30.98 mm** against a
+module outline of **17.78 × 33.00 mm**. The body overhangs its own courtyard by ~1.0 mm at
+each end (pads run 2.53 … 30.47 in the part's local frame, i.e. 2.53 mm inside each edge).
+
+This inverts the usual enclosure rule. `references/mechanical.md` §4 says to check
+openings against the courtyard *rather than* the nominal body — correct when the courtyard
+is the larger of the two, which is the normal case. For a socketed module it is the
+smaller one, and a deck window sized on courtyards alone leaves a ~1.0 mm lip of plastic
+reaching over a module that stands 1.30 mm **proud** of the plate. Every clearance check
+passes: the courtyard said nothing was there.
+
+Use `courtyard ∪ datasheet body` for the obstacle rect, and **assert the relation** so a
+later footprint edit that "fixes" the courtyard cannot silently move the window. hexpad
+does exactly this (`MCU1 body south edge 33.00 exceeds its courtyard 31.99`).
+
+**Sharper, from hexpad rev 2: NEITHER rect alone bounds the module — the union is not
+belt-and-braces, it is required.** Same footprint, rotated −90°, measured off the board:
+
+| | courtyard | body | who overhangs |
+|---|---|---|---|
+| along the module's LENGTH | 19.635 … 50.615 | **18.625 … 51.625** | body, by **1.010 mm at each end** |
+| across its WIDTH | **0.500 … 18.780** | 0.750 … 18.530 | courtyard, by **0.250 mm per side** |
+
+The body wins on the long axis (the pad grid stops 2.53 mm inside each short edge); the
+courtyard wins on the short axis (silk/fab margin). Sizing on the body alone loses 0.25 mm
+per side; sizing on the courtyard alone lays 1.01 mm of deck over a module that stands
+proud of the plate. Assert **both** relations in **both** directions, or a future footprint
+edit "correcting" either one moves your opening.
+
+`kicad_geom.py --json` still exports no body rectangle (only `courtyard` and `pads_bbox`),
+so the body comes from this card and must be asserted against the footprint's own origin
+and rotation. Compute it through the part's rotated frame, never by hand: the footprint is
+drawn long-axis-along-**local y**, so its local half-extents are `(WID/2, LEN/2)` and it is
+a **−90°** placement that lays the 33 mm axis along board x.
+
+### USB out a side edge, module rotated
+
+Rotating the module 90° so USB exits a side edge works and changes three numbers. From
+hexpad rev 2 (module at rot −90, USB east):
+
+- the **USB-C shell** is `local x ±USB_W/2` by `local y −LEN/2−0.60 … −LEN/2+7.35` — i.e.
+  **8.94 mm across × 7.35 mm deep including the 0.60 mm overhang**. Placed: a 7.35 mm-deep
+  shell reaching 0.60 mm past the board edge.
+- a **nice!view laid over the module along its long axis** then sits *beside* the
+  receptacle rather than on top of it: set the display back 7.00 mm from that edge and its
+  envelope stops **0.25 mm short** of the shell, which removes the display-vs-shell z
+  clearance from the design entirely (see `nice-view-display.md` §2a).
+- the case's wall on that edge now carries **both** the USB notch (above the board plane)
+  and whatever is under the module on the back face (hexpad: the slide switch, below it).
+  Assert the **web** between them, not just each opening: hexpad's is
+  `usb_floor(+1.20) − slot_ceiling(−1.60) = 2.80 mm` of full-thickness wall.
+
+### Enclosure treatment that works, with numbers (hexpad, `verify()`-passing)
+
+For a socketed module with USB out a wall, deck at +3.50 and a 6.30 mm stack:
+
+| Feature | Resolution |
+|---|---|
+| deck over the module | **open window**, `courtyard ∪ body` + 0.30 keepout. Not a raised bay: a bay stands proud of the print's plate-down reference face. |
+| USB-C opening | an open **notch** in the wall, floor at z = **+1.20** (port axis 4.70 − 7.0/2), cut clean through the wall and open above its top. No bridge — the notch reaches the first layer. |
+| opening width | **12.0 mm** for an 8.94 mm receptacle shell: ≈1.5 mm each side, and it admits a chunky plug overmold. |
+| why "clean through" | the shell overhangs the board edge by 0.60 mm and a typical cavity inset is 0.30 mm, so the shell reaches **0.30 mm into the wall**. A recess fouls it. |
 
 ## Flipping it to the other face
 

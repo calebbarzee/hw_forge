@@ -1,7 +1,7 @@
 ---
 domain: keyboards/zmk
 tags: [zmk, ext-power, underglow, spi3, pinctrl, devicetree, overlay, brightness-cap, split-ble, nrf52840, diode-direction, col2row, kscan]
-source: z_board v0.4 (kicad/POWER.md, kicad/NOTES.md, README.md) + ZMK hardware design guide
+source: z_board v0.4 (kicad/POWER.md, kicad/NOTES.md, README.md) + ZMK hardware design guide; hexpad phase-7 harvest
 date: 2026-08-22
 confidence: researched
 ---
@@ -34,14 +34,18 @@ shield's own `.overlay`.
 
 - Give the chain **its own `&spi3`** with a pinctrl mapping MOSI to the data pin
   (z_board: **P1.00**, silkscreen D6).
-- **Avoid `spi1`'s defaults**: SCK lands on **P1.13** and MISO on **P1.11** — which on
-  z_board's map are matrix columns C4 and C5. A default peripheral pinmux silently
-  fighting the matrix is the failure mode.
+- **Avoid `spi1`'s defaults**: SCK is **P1.13** (labelled D15), MISO **P1.11** (D14), MOSI
+  **P0.10** (D16) — and P1.13/P1.11 are matrix columns C4 and C5 on z_board's map. A default
+  peripheral pinmux silently fighting the matrix is the failure mode.
 - Likewise check `uart0`'s defaults against the matrix rows (they collided with R0/R1 on
   z_board's map).
 - **Rule: before locking a pin map, list every default peripheral pinmux on the target
   board and check it against the matrix and the chain.** Free GPIOs are not the constraint;
-  peripheral defaults are.
+  peripheral defaults are. **For nice!nano v2 the enumeration is already done** — do not
+  re-derive it from the firmware tree: see `nice-nano-v2.md`, "Default peripheral pinmux —
+  the enumeration, done once", which tables `uart0`, `i2c0`, `spi1`, the blue LED and
+  ext-power in port terms with the D labels derived, and records that `spi0`/`spi2`/`spi3`
+  are unclaimed and that P0.29 (D20) has no default role.
 
 ## Brightness cap as a hardware requirement
 

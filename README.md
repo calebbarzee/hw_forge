@@ -192,17 +192,40 @@ the skeleton, the gate runner, and the accumulated traps.
 
 ## Status and roadmap
 
-v0.1, in construction. The scripts, templates and knowledge cards are being
-extracted from z_board now; the reference docs that carry the KiCad, electronics,
-mechanical and battery knowledge are being written from the same source.
+**v0.2 — the dry run is DONE.** The scripts, templates, references and knowledge
+cards are extracted from z_board, and they have now been used to build something
+they were not written from.
 
-The next milestone is the **dry run**: a fresh session designs a 6-key macro pad
-with a nice!view display on a nice!nano, using nothing but the skill. Anything it
-has to ask about or rediscover is a gap, and every gap gets folded back in — as a
-line in the skill, a knowledge card, or a fix to a script. A trivial board is the
-right test precisely because nothing about it should be hard.
+**The dry run** was the milestone: a 6-key macro pad with a nice!view display on
+a nice!nano — **hexpad** — designed end to end using nothing but this skill.
+Verdict: the board is fabbable and the enclosure is verified. ERC 0 / DRC 0 with
+schematic parity / 0 unconnected on both the board and its one-key proto slice;
+a 21-file fab package whose hole census, placement split and layer set are
+asserted rather than eyeballed; 215 numeric enclosure checks, all passing. Not
+one gap was a design failure.
 
-After that: agent-definition hardening from what the dry run exposes, plugin
-packaging, and a migration path off the SWIG `pcbnew` module onto the IPC API
-(`kicad-python`), which matters because SWIG is deprecated in KiCad 9 and removed
-in 11.
+The same board was then **revised** on user direction — module and display
+rotated 90°, the board shrunk, the case rebuilt — which tested something a fresh
+build does not: whether a *change* can be trusted. Gates green again, 239
+enclosure checks.
+
+Together they produced **60 logged gaps** — every rediscovery, missing
+statement, script shortfall and unclear instruction — of which **55 are fixed in
+this version**, 4 are deferred with reasons in
+[`docs/BACKLOG.md`](docs/BACKLOG.md), and 1 is works-as-intended. The highest-value catches: a footprint courtyard can
+be *smaller* than the part it holds (a silent interference every clearance check
+passes); the fab exporter could delete its own profile and still print `ok`; and
+"no source anywhere has this number" needed to become a real, documented research
+outcome instead of a dead end. From the revision: a rotation-sign error in a
+handoff table that only an *asymmetric* feature could reveal, and a fastening
+rule that turned out to be unsatisfiable at one hole and to resolve differently
+on each of the two shells. The revision also added what a revision needs and a
+build does not — **regression contracts**: a rev now diffs its DRC finding
+classes and its enclosure check *set* against the previous rev, so a new warning
+class or a quietly retired check cannot pass in silence. The full verdict is
+[`docs/DRYRUN-HEXPAD.md`](docs/DRYRUN-HEXPAD.md).
+
+Next: plugin packaging (including making the slash commands reachable from a
+project the plugin is not installed into), then the migration off the SWIG
+`pcbnew` module onto the IPC API (`kicad-python`) — forced work, because SWIG is
+deprecated in KiCad 9 and removed in 11.

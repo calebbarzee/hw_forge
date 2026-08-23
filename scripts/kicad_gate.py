@@ -16,11 +16,26 @@ schematic, which is the failure mode a generated board is most prone to.
 
     python3 scripts/kicad_gate.py path/to/project_dir
     python3 scripts/kicad_gate.py path/to/project_dir --name boardname
+    python3 scripts/kicad_gate.py path/to/project_dir --sch-only
 
 The project name is auto-discovered from the .kicad_pro / .kicad_sch /
 .kicad_pcb in the directory; --name is only needed when a directory holds more
-than one project.  A missing schematic or board is reported as a failing check,
-never skipped silently.
+than one project.
+
+SCHEMATIC-ONLY PROJECTS.  At the end of a correct schematic phase there is no
+board file yet, and the phase's exit contract is "ERC 0" — so a missing board
+must not be a failing check, or the gate can never pass in the phase that names
+it.  Two ways to say so, and they print the same PARTIAL verdict:
+
+  * `--sch-only`   deliberate: run ERC, do not look for a board at all.
+  * auto-detect    a directory with a schematic and no `.kicad_pcb` reports
+                   `DRC SKIPPED` and exits 0 on a clean ERC.
+
+Both are loud: the summary line says the gate was partial, so a green line can
+never be mistaken for a fully gated board.  Pass `--require-board` where a
+board is expected to exist (a PCB-phase gate, a fab-export precondition, CI)
+and a missing one should fail.  A missing *schematic* is always a failure, and
+a board that exists is always gated.
 """
 
 import argparse
@@ -92,8 +107,14 @@ def run_check(cli, subcmd, flags, src, out_json):
                      % proc.returncode)
 
 
-def gate(project_dir, name=None, cli=None, quiet=False):
-    """Run both checks. Returns the number of failing checks."""
+def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
+         require_board=False):
+    """Run both checks. Returns (failures, verdict).
+
+    `verdict` is "full" when both the schematic and the board were gated and
+    "partial" when the board was legitimately skipped, so a caller can print
+    the difference rather than treating a schematic-only pass as a gated board.
+    """
     name, sch, pcb = discover(project_dir, name)
     if cli is None:
         cli, how = find_cli()
@@ -118,6 +139,16 @@ def gate(project_dir, name=None, cli=None, quiet=False):
         say("  %-11s %s  %s" % ("ERC", state.upper(), detail))
         failures += 1
 
+    # The board is skipped, not failed, when there is deliberately none yet.
+    # --require-board turns the skip back into the failure a PCB-phase or
+    # pre-export caller wants.
+    if sch_only or (not os.path.exists(pcb) and not require_board):
+        why = ("--sch-only" if sch_only
+               else "no board file yet: %s" % os.path.basename(pcb))
+        say("  %-11s SKIPPED  (%s)" % ("DRC", why))
+        say("  verdict     PARTIAL — schematic only, the board is NOT gated")
+        return failures, "partial"
+
     drc_json = os.path.join(project_dir, "drc.json")
     state, detail = run_check(cli, ["pcb", "drc"], DRC_FLAGS, pcb, drc_json)
     if state in ("ok", "violations") and os.path.exists(drc_json):
@@ -128,7 +159,7 @@ def gate(project_dir, name=None, cli=None, quiet=False):
         say("  %-11s %s  %s" % ("DRC", state.upper(), detail))
         failures += 1
 
-    return failures
+    return failures, "full"
 
 
 def main():
@@ -137,7 +168,15 @@ def main():
     ap.add_argument("--name", help="project basename (default: auto-discover)")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress the heading and ok lines")
+    ap.add_argument("--sch-only", action="store_true",
+                    help="gate the schematic only (the phase-3 exit contract); "
+                         "do not look for a board")
+    ap.add_argument("--require-board", action="store_true",
+                    help="fail if there is no board file, instead of skipping "
+                         "DRC (use where a board must exist by now)")
     args = ap.parse_args()
+    if args.sch_only and args.require_board:
+        ap.error("--sch-only and --require-board contradict each other")
 
     cli, how = find_cli()
     if not cli:
@@ -150,7 +189,9 @@ def main():
         raise SystemExit("error: %s will not run (found via %s)\n"
                          "  fix: python3 scripts/preflight.py" % (cli, how))
 
-    failures = gate(args.project_dir, args.name, cli, args.quiet)
+    failures, _verdict = gate(args.project_dir, args.name, cli, args.quiet,
+                              sch_only=args.sch_only,
+                              require_board=args.require_board)
     if failures:
         print("  %d check(s) failed" % failures, file=sys.stderr)
         sys.exit(1)

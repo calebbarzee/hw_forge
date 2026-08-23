@@ -59,6 +59,19 @@ a compatibility naming scheme for some other footprint, and mapping them to the
 MCU's real ports is a separate table that has to be written down explicitly, or
 the firmware will be wired to the wrong pins.
 
+Three doctrine rules apply here; `agents/resource-scout.md` carries them in full:
+
+- **Three outcomes, not two.** Resolved, UNRESOLVABLE, or BARRIER. When no source
+  at any tier has the fact, hand the next phase a named, tolerance-banded
+  parameter with a recommended default — do not block, and do not guess.
+- **Report conflicts on any two-source fact**, not just pin tables. Two secondary
+  sources disagreeing on a mechanical number costs a case redesign; it still gets
+  reported with both tiers named rather than decided by preference.
+- **When the primary source is an image** — the pin table published only as a PNG,
+  which no tool here can read — two independently-authored derived assets that
+  both cite that image are the accepted fallback, and that they were never checked
+  against the primary is flagged inline in the provenance row and the report.
+
 ## 4. Vendor into the project with a provenance manifest
 
 Copy the asset into the project — do not depend on a path outside it, and do not
@@ -77,6 +90,22 @@ everyone but this machine). Then record, per asset:
 
 Write it as `lib/PROVENANCE.md` (or extend the existing one). A vendored asset
 with no provenance entry is not done.
+
+**One file, one job.** `lib/PROVENANCE.md` is the normative, strict, per-asset
+provenance **table** — the fields above, nothing else — and it is what a gate
+checks. Anything narrative (pin tables in context, firmware config, the
+local-reuse survey, open risks) belongs in the project's own research/notes doc,
+which may exist and must **link** to `PROVENANCE.md` rather than restate any row
+of it. No row appears in both; two copies of a provenance row drift, and then
+neither is trustworthy. An orchestration prompt asking for a differently-named
+provenance document does not override this file — write the table here and link
+it from wherever the prompt wanted a doc.
+
+Vendoring also splits by purpose: production geometry (what the projects'
+`fp-lib-table` / `sym-lib-table` resolve) goes in `kicad/lib/`; cross-check
+evidence kept only to prove a fact goes in `lib/reference/` and nothing builds
+against it. One directory holding both is how a later phase imports the wrong
+footprint with nothing to catch it.
 
 If you upgraded a library file's format, say so and say from what — format
 upgrades are one-way, and knowing the original version is what makes a future

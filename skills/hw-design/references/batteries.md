@@ -16,7 +16,17 @@ Pouch-cell part numbers are **six digits encoding dimensions in units of 0.1 mm 
 ```
 Read it as **thickness × width × length**, thickness first and in tenths. Five- and seven-digit variants exist (a leading digit for ≥10 mm thickness, or 4-digit sub-mm codes); when a number does not parse cleanly, get the dimensions from the datasheet rather than guessing.
 
-**Thickness is the number that drives enclosure height. Plan area is almost never the constraint** in a flat device — choose the cell on thickness, then check the footprint fits a boss-free band.
+**The required form of this rule is three assertions, not the prose above.** Every project that carries a size code carries the dimensions too, so check that they agree:
+
+```python
+v.equals("size code thickness", float(code[0:2]) / 10.0, p.bat_thk)
+v.equals("size code width",     float(code[2:4]),        p.bat_wid)
+v.equals("size code length",    float(code[4:6]),        p.bat_len)
+```
+
+It is the cheapest possible check and it caught a real error on its first outing: a handoff described a **503035** as "50 × 30", reading the leading `50` as a length. It means **5.0 × 30 × 35 mm** — a 35 mm cell, not a 50 mm one, and the bay being recommended for it would have been **14.4 mm longer than the cell**. A cell part number that disagrees with its own dimensions is always a **spec error**, never a rounding one; fix the spec, do not widen a tolerance.
+
+**Thickness is the number that drives enclosure height. Plan area is almost never the constraint** in a flat device — choose the cell on thickness, then check the footprint fits a boss-free band. **When it *is* the constraint, "find a thinner cell" does not help at all**: see §7 for the order of operations that separates the plan constraint from the vertical one.
 
 ## 2. Common cells
 
@@ -36,7 +46,16 @@ Typical vendor ratings. Treat as a **shortlist for a first pass and verify again
 | **503450** | 5.0 × 34 × 50 | **~1000 mAh** — the reference "1 Ah" cell |
 | 803450 | 8.0 × 34 × 50 | ~1500–1600 mAh |
 
-Sanity check any figure you are told: for cells of this class, **capacity ≈ 0.10–0.12 mAh per mm³** of enclosed volume. Small cells sit at the low end (packaging overhead dominates); large flat cells at the high end. A quoted capacity more than ~30 % off that band is a marketing number.
+Sanity check any figure you are told: for cells of this class, **capacity ≈ 0.08–0.12 mAh per mm³** of enclosed volume. The band is **two-tier**, and the tier is set by **plan footprint**, not by volume:
+
+| Tier | Families | mAh/mm³ |
+|---|---|---|
+| Small plan footprint (≲1100 mm²) | 12×30, 20×30, 25×35, 30×35 | **0.08–0.105** |
+| Large flat | 34×50 | **0.11–0.12** |
+
+Every row above sits inside its own tier: 301230 0.102, 401230 0.104, 402030 0.083, 502030 0.083, 602030 0.083, 503035 0.095, 602535 0.095, 303450 0.118, 403450 0.118, 503450 0.118, 803450 0.114. Packaging overhead dominates a small footprint — the tiers are that effect, quantified.
+
+**Apply the ~30 %-off marketing test against the relevant tier, not against the overall band.** The doctrine tells a project to code a plausibility sentence as an assertion, and the previous single band (0.10–0.12) failed **five of the eleven rows above** — exactly the small-footprint ones — so the first small cell considered produced a false failure. A band a catalogue row cannot pass is a bug in the band.
 
 ## 3. Swell and the thickness budget
 
@@ -90,6 +109,12 @@ runtime_h   = capacity_mAh / I_load_mA         # times ~0.8 for usable capacity
 
 **Design the bay for the largest cell you would ever fit; document the smaller compatibles as a table with every downstream dimension adjusted.**
 
+**Order of operations when plan area is the binding constraint.** "Only thickness varies" holds once the bay footprint fits; getting it to fit is a separate derivation, and a thinner cell buys nothing:
+
+1. Derive the bay's **plan** constraint from the **full-height obstacles only** — fastener bosses, walls, ribs: things that reach from floor to board. Nothing else can touch it.
+2. Derive the bay's **vertical** constraint separately, from the parts standing over the bay's own footprint (§3).
+3. A single "guaranteed clear rectangle" handed over by a PCB phase **conflates the two and always comes out too small.** (hexpad: the handed-over band was 34.0 mm for a 34 mm-wide cell — zero room for the mandatory 0.6 mm of in-plane slop (§3, `mechanical.md` §5), before ribs or a 3.10 mm boss keepout. The cell's top plane sits 2.60 mm under the PCB and clears every part on the underside, so only the screw bosses actually constrained it in plan.)
+
 - The bay footprint is shared by a whole length/width family (e.g. everything `xx3450`), so only **thickness** varies.
 - Make `cell_thk`, `cell_len`, `cell_wid` parameters; let cavity depth, case height and **screw length** derive from them. A thinner cell shortens the cavity, which shortens the screw — the generator must print the computed length rather than the doc asserting one.
 - Publish the family as a table so a user can substitute without re-running CAD:
@@ -100,5 +125,15 @@ runtime_h   = capacity_mAh / I_load_mA         # times ~0.8 for usable capacity
 | 403450 | ~800 mAh | 4.0 | 16.2 mm | M2 × 12 |
 | **503450** | **~1000 mAh** | **5.0** | **17.2 mm** | **M2 × 14** |
 
-- Assert in `verify()` that the bay rectangle: sits inside the cavity with rib thickness to spare; is clear of every fastener boss; and does **not** overlap any part taller than the bay's own clearance budget. Report the nearest offender by name.
+**"Bay" is two nouns; name which one every assertion is about.** The **pocket** is the volume the cell occupies; the **fence** is the pocket plus its 1.6 mm ribs. Assert in `verify()`, with the right noun on each, and report the nearest offender by name:
+
+1. **Pocket** vs every fastener boss — the 0.30 mm keepout.
+2. **Pocket** vs every part taller than the bay's own clearance budget.
+3. **Fence** sits inside the cavity, with rib thickness to spare.
+4. **Fence top z** below the underside bound.
+
+**A fence may merge with a boss.** A rib and a boss are both plastic on the same printed part, so a merge is not an interference — it stiffens the fence. And `mechanical.md` §4's 0.30 mm keepout is explicitly "clearance to any **component**": a boss is not a component.
+
+One ambiguous noun is worth a 2× capacity difference. (hexpad rev 1 read "bay" as the fence and got away with it because the board was long enough. Rev 2's board is 15.6 mm shorter: under the fence reading — fence held 3.10 mm off the H1/H2 bosses — a 34 mm-wide cell has **no legal placement at all**, and the handoff concluded the 503450 did not fit and recommended a ~500 mAh cell. Under the pocket reading, which is what the physical requirement is, the full four-sided fence fits, the two bosses simply **fuse into its southern corners**, and the pocket still stands 1.205 mm clear of both: 1000 mAh, not 500.)
+
 - Record which spec the bay *superseded* and why. A cell chosen early against a guessed height budget is the most common stale number in a hardware spec: one project's 110 mAh cell became a 1000 mAh cell, and it cost +3.1 mm of case height — all of it in the bottom cavity.

@@ -1,8 +1,8 @@
 ---
 domain: keyboards/geometry
-tags: [mx, cherry-mx, keyswitch, kailh-hotswap, plate, cutout, pitch, npth, corridor]
-source: z_board v0.4 (kicad/NOTES.md, case/zboard_case.py, keyswitches.pretty)
-date: 2026-08-22
+tags: [mx, cherry-mx, keyswitch, kailh-hotswap, plate, cutout, pitch, npth, corridor, footprint-side, clearance-ledger, enclosure]
+source: z_board v0.4 (kicad/NOTES.md, case/zboard_case.py, keyswitches.pretty); hexpad phase-4/6 (kicad/hexpad.kicad_pcb, case/hexpad_case.py, GAPS.md #25/#45)
+date: 2026-08-23
 confidence: verified-in-cad
 ---
 
@@ -22,6 +22,37 @@ confidence: verified-in-cad
 | SK6812MINI-E reverse-mount body below PCB | 1.40 mm | see `sk6812mini-e.md` |
 
 Consequence for enclosures: **3.50 mm under the plate is the whole budget** for anything on the switch face. A socketed nice!nano needs 6.30 mm, so a deck physically cannot pass over it — see `nice-nano-v2.md`.
+
+### The footprint's `side` lies about where the hardware is
+
+**`Kailh_socket_MX` is a FRONT-face footprint whose hardware lives entirely UNDER the
+board.** Its pads are declared on B.Cu but the footprint sits on F.Cu, so
+`kicad_geom.py --json` (and `pcbnew`, and the fab pos file) report it as a *top*-side
+part — while 1.85 mm of socket body and 2.20 mm of MX pin/locating post hang below the
+PCB. Filtering for `side == "bottom"` to build an underside clearance ledger therefore
+misses **every switch cell on the board**.
+
+Measured on hexpad (6 keys, 2 rows): asking for back-side footprints reported a
+full-width free band of **14.96 mm** under the key field. Including the sockets, the real
+figure is **5.52 mm**. A battery bay sized against the first number interferes with all
+six switches, and every clearance check passes, because the ledger never contained them.
+
+The same trap, one step removed, applies to any **through-hole socketed module** on the
+front face: `MCU_nice_nano_v2` and a nice!view header are front-face parts whose clipped
+solder tails stand proud on the **back**. Their obstacle rectangles belong on the
+back-face ledger too (budget ~1.5 mm unless measured).
+
+Rule: build the underside ledger from *what protrudes*, not from the footprint's declared
+side. **`kicad_geom.py --json` now answers this directly**: each footprint carries a
+`protrudes` list of the faces its hardware stands proud of (plus `pad_side` and
+`through_hole`), so the ledger is derivable rather than hand-enumerated. On hexpad rev 2 it
+reports **29** parts protruding below a 33-footprint board — the six Kailh sockets and both
+socketed modules among them, none of which are bottom-*side* footprints.
+
+The check worth copying: assert that **every ref the board says protrudes downward has a
+height in your ledger**. Then a part added to the board cannot silently miss it — which is
+what the hand-enumerated rev-1 version could not promise
+(`hexpad/case/hexpad_case.py`, `obstacles_bot()` / `height_below()`).
 
 ## Kailh_socket_MX footprint — the NPTH pattern
 

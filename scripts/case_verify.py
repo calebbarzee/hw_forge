@@ -8,6 +8,29 @@ needed, so a failure tells you which named constant to nudge and by how much.
     python3 scripts/case_verify.py case/checks.py
     python3 scripts/case_verify.py case/checks.py --suite left --json
 
+RUN THIS WITH THE PYTHON YOUR CAD LIBRARY LIVES IN.  This module is pure
+stdlib, so it runs under any interpreter — but a real enclosure suite has to
+assert *valid solids* and *nothing proud of the print reference face*, and
+neither is expressible without building the geometry.  Under a system `python3`
+with no build123d those checks either vanish (a silently ungated phase) or the
+checks file dies on import.  A project venv is the normal answer:
+
+    case/.venv/bin/python scripts/case_verify.py case/checks.py
+
+and **register the CAD import itself as a check**, carrying its own fix
+command, so a missing dependency reports as one failing check instead of thirty
+missing ones.
+
+ONE SUITE, TWO ENTRY POINTS.  The generator wants a numeric pass that runs on
+every invocation before export; this script wants a file exposing `checks(v)`.
+Write them once: the *generator* owns the `checks(v)`-shaped function against
+this `Suite` API, the checks file is a three-line re-export of it, and the
+generator's `__main__` imports `case_verify.Suite` and runs the same function
+before exporting.  Two suites drift; this cannot.
+
+    # case/checks.py
+    from mycase import run_checks as checks     # noqa: F401
+
 Write the checks file against this module's `Suite`.  It must define
 `checks(v)`; anything else in the file is yours.  Derive the numbers from the
 board file (see kicad_geom.py) rather than retyping them, so the case cannot
@@ -49,17 +72,52 @@ drift from the PCB it has to fit:
 Coordinates are yours to choose, but pick one frame and say so in a comment.
 Board files are x east / y **south**; most CAD frames want y north.  Mixing
 them is the classic way to get a case that verifies clean and prints mirrored.
+
+THE REVISION CONTRACT.  When a case is REBUILT against a revised board, the
+check *set* is as much an artifact as the check *result* — and a shrinking suite
+is invisible from the outside:
+
+    python3 scripts/case_verify.py checks.py --dump-names rev1-names.json
+    ... revise the board, rebuild the case ...
+    python3 scripts/case_verify.py checks.py --baseline rev1-names.json
+
+reports `added / retired / newly-failing / fixed`.  Retiring a check is often
+correct — a measured case: rev 1's tightest number was "display underside
+clears the USB-C shell top" at 0.70 mm, and 0.00 mm at the assumption band's
+floor; rev 2 moved the display 7 mm west so the two no longer overlap in plan
+and the z clearance became geometrically moot, replaced by a plan check.  That
+is a design improvement, and from outside it is indistinguishable from quietly
+dropping the check that was hardest to pass.  So: **a retirement with a stated
+reason is knowledge; a retirement with a smaller number is a regression nobody
+can see.**  `--strict-baseline` fails the run when a check disappears, for the
+CI case where nothing should retire without a human saying why.
+
+The check *count* is never a target.  Re-derive it; do not force the previous
+number.
 """
 
 import argparse
+import collections
 import json
 import math
 import os
+import re
 import sys
 
 # The checks file is imported from the user's own tree; do not leave a
 # __pycache__ directory in their project as a side effect of verifying it.
 sys.dont_write_bytecode = True
+
+# Every comparison carries this slack, and it is not cosmetic.  A good design
+# lands exactly ON its own minimum — an Ø5.60 standoff around an Ø3.20 insert
+# bore is the reference's 1.20 mm minimum wall, and in binary floating point
+# `(5.60 - 3.20) / 2 == 1.1999999999999997`, so a bare `>=` FAILS the correct
+# design.  The incentive that creates is the dangerous part: the obvious way to
+# make the red line green is to loosen the design (5.65 mm standoff) or the
+# rule (1.19 mm), and both are wrong.  1 nm of slack is far below any
+# manufacturable tolerance and removes the whole class of false failure.
+# Pass `tol=0` on a check that must be exact to the bit.
+TOL = 1e-6
 
 
 # ------------------------------------------------------------------- shapes
@@ -89,6 +147,14 @@ class Shape(object):
         return "<%s %s>" % (self.kind, self.name)
 
 
+_NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+
+
+def name_of(message):
+    """A check's stable identity: its message with every number blanked."""
+    return _NUMBER.sub("#", message).strip()
+
+
 def box_distance(a, b):
     """Distance between two axis-aligned boxes; 0 if they touch or overlap."""
     dx = max(a.x0 - b.x1, b.x0 - a.x1, 0.0)
@@ -110,7 +176,7 @@ class Suite(object):
         self.name = name
         self.loud = loud
         self.only = only
-        self.results = []            # (suite, section, ok, message)
+        self.results = []            # (suite, section, ok, message, name)
         self._section = ""
         self._suite = name
         self._skipping = bool(only) and bool(name) and name != only
@@ -146,23 +212,31 @@ class Suite(object):
 
     # -- the checks -------------------------------------------------------
 
-    def check(self, ok, message):
-        """Record one result. Every other method funnels through here."""
+    def check(self, ok, message, name=None):
+        """Record one result. Every other method funnels through here.
+
+        `name` is the check's stable identity for baseline comparison; when it
+        is not given it is derived by replacing every number in the message
+        with `#`.  That is exactly the right split: the numbers are the volatile
+        part, the words are what the check *is*, so a check whose value moved
+        keeps its identity and a check that was replaced does not.
+        """
         if self._skipping:
             return bool(ok)
-        self.results.append((self._suite, self._section, bool(ok), message))
+        self.results.append((self._suite, self._section, bool(ok), message,
+                             name or name_of(message)))
         if self.loud:
             print("  %s %s" % ("ok  " if ok else "FAIL", message))
         return bool(ok)
 
-    def clearance(self, a, b, minimum):
+    def clearance(self, a, b, minimum, tol=TOL):
         """`a` must stand at least `minimum` mm clear of `b`."""
         got = gap(a, b)
-        return self.check(got >= minimum,
+        return self.check(got >= minimum - tol,
                           "%s to %s: %.3fmm (need %.3f)"
                           % (a.name, b.name, got, minimum))
 
-    def nearest(self, a, others, minimum):
+    def nearest(self, a, others, minimum, tol=TOL):
         """Clearance to the closest of many obstacles — one line, not N.
 
         This is what keeps a check run readable when a part must clear every
@@ -171,46 +245,46 @@ class Suite(object):
         if not others:
             return self.check(True, "%s: no obstacles to clear" % a.name)
         worst = min(((gap(a, b), b.name) for b in others))
-        return self.check(worst[0] >= minimum,
+        return self.check(worst[0] >= minimum - tol,
                           "%s to nearest of %d (%s): %.3fmm (need %.3f)"
                           % (a.name, len(others), worst[1], worst[0], minimum))
 
-    def inside(self, part, region, margin=0.0):
+    def inside(self, part, region, margin=0.0, tol=TOL):
         """`part` must sit wholly inside `region`, with `margin` to spare."""
         slack = min(part.x0 - part.radius - (region.x0 + margin),
                     part.y0 - part.radius - (region.y0 + margin),
                     (region.x1 - margin) - (part.x1 + part.radius),
                     (region.y1 - margin) - (part.y1 + part.radius))
-        return self.check(slack >= 0.0,
+        return self.check(slack >= -tol,
                           "%s inside %s: %.3fmm to spare%s"
                           % (part.name, region.name, slack,
                              "" if not margin else " (margin %.3f)" % margin))
 
-    def outside(self, part, region, margin=0.0):
+    def outside(self, part, region, margin=0.0, tol=TOL):
         """`part` must not overlap `region` (a keepout, bay or cutout)."""
         got = gap(part, region)
-        return self.check(got >= margin,
+        return self.check(got >= margin - tol,
                           "%s clear of %s: %.3fmm (need %.3f)"
                           % (part.name, region.name, got, margin))
 
-    def equals(self, name, got, want, tol=1e-6):
+    def equals(self, name, got, want, tol=TOL):
         return self.check(abs(got - want) <= tol,
                           "%s = %.4f (want %.4f +/- %g)" % (name, got, want, tol))
 
-    def at_least(self, name, got, floor):
-        return self.check(got >= floor,
+    def at_least(self, name, got, floor, tol=TOL):
+        return self.check(got >= floor - tol,
                           "%s = %.4f (need >= %.4f)" % (name, got, floor))
 
-    def at_most(self, name, got, ceiling):
-        return self.check(got <= ceiling,
+    def at_most(self, name, got, ceiling, tol=TOL):
+        return self.check(got <= ceiling + tol,
                           "%s = %.4f (need <= %.4f)" % (name, got, ceiling))
 
-    def between(self, name, got, low, high):
-        return self.check(low <= got <= high,
+    def between(self, name, got, low, high, tol=TOL):
+        return self.check(low - tol <= got <= high + tol,
                           "%s = %.4f (need %.4f..%.4f)" % (name, got, low, high))
 
     def stack(self, name, terms, at_least=None, at_most=None, equals=None,
-              tol=1e-6):
+              tol=TOL):
         """Sum a named stack-up and assert its total.
 
         `terms` is {label: mm}; negative terms subtract.  The printed line
@@ -263,8 +337,13 @@ class Suite(object):
     def summary(self):
         total, bad = len(self.results), len(self.failures)
         return {"checks": total, "passed": total - bad, "failed": bad,
-                "failures": [{"suite": s, "section": sec, "message": m}
-                             for s, sec, ok, m in self.results if not ok]}
+                "failures": [{"suite": r[0], "section": r[1], "message": r[3]}
+                             for r in self.results if not r[2]]}
+
+    def names(self):
+        """Every check's stable identity, for a baseline dump."""
+        return [{"suite": r[0], "section": r[1], "name": r[4], "ok": r[2]}
+                for r in self.results]
 
 
 # ---------------------------------------------------------------------- CLI
@@ -302,6 +381,51 @@ def run_checks(path, only=None, loud=True):
     return suite
 
 
+def compare_names(current, baseline, indent="  "):
+    """Print added / retired / newly-failing / fixed. Returns (added, retired).
+
+    Identities are compared as a MULTISET, because a suite legitimately
+    registers the same check shape many times — one per fastener boss, one per
+    key cell — and "there are three of these now, there were four" is a real
+    answer that a set would swallow.
+    """
+    def tally(rows):
+        return collections.Counter((r["suite"], r["name"]) for r in rows)
+
+    now, was = tally(current), tally(baseline)
+    ok_now = {(r["suite"], r["name"]): r["ok"] for r in current}
+    ok_was = {(r["suite"], r["name"]): r["ok"] for r in baseline}
+
+    added = sorted(k for k in now if k not in was)
+    retired = sorted(k for k in was if k not in now)
+    changed = sorted(k for k in now if k in was and now[k] != was[k])
+    broke = sorted(k for k in now
+                   if k in was and ok_was.get(k) and not ok_now.get(k))
+    fixed = sorted(k for k in now
+                   if k in was and not ok_was.get(k) and ok_now.get(k))
+
+    for keys, label in ((added, "+ added  "), (retired, "- RETIRED"),
+                        (broke, "! newly-failing"), (fixed, "  fixed  ")):
+        for suite, name in keys:
+            print("%s%s %s%s" % (indent, label,
+                                 "%s: " % suite if suite else "", name))
+    for suite, name in changed:
+        print("%s~ count   %s%s  %d -> %d"
+              % (indent, "%s: " % suite if suite else "", name, was[(suite,
+                 name)], now[(suite, name)]))
+    if not (added or retired or changed or broke or fixed):
+        print("%ssame check set, same outcomes" % indent)
+    print("%s%d check(s) now, %d in the baseline: %d added, %d retired"
+          % (indent, sum(now.values()), sum(was.values()),
+             sum(now[k] for k in added), sum(was[k] for k in retired)))
+    if retired:
+        print("%sSTATE A REASON for every retired check in your report — a "
+              "retirement\n%swith a stated geometric reason is knowledge; one "
+              "with a smaller number\n%sis a regression nobody can see."
+              % (indent, indent, indent))
+    return added, retired
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("checks", help="a python file defining checks(v)")
@@ -310,6 +434,15 @@ def main():
                     help="print only the final tally")
     ap.add_argument("--json", action="store_true",
                     help="emit the summary as JSON")
+    ap.add_argument("--dump-names", metavar="FILE",
+                    help="write every check's stable identity to FILE, as the "
+                         "baseline for a later revision")
+    ap.add_argument("--baseline", metavar="FILE",
+                    help="compare this run's check SET against a --dump-names "
+                         "file: added / retired / newly-failing / fixed")
+    ap.add_argument("--strict-baseline", action="store_true",
+                    help="with --baseline, fail the run if any check present "
+                         "in the baseline no longer exists")
     args = ap.parse_args()
 
     suite = run_checks(args.checks, args.suite, loud=not (args.quiet or args.json))
@@ -327,10 +460,30 @@ def main():
     else:
         print("\nall %d checks passed" % summary["checks"])
 
+    retired = []
+    if args.dump_names:
+        with open(args.dump_names, "w") as fh:
+            json.dump({"checks": suite.names()}, fh, indent=2)
+            fh.write("\n")
+        print("\nwrote %d check name(s) to %s"
+              % (summary["checks"], args.dump_names))
+    if args.baseline:
+        if not os.path.exists(args.baseline):
+            raise SystemExit("error: no such baseline: %s" % args.baseline)
+        with open(args.baseline) as fh:
+            old = json.load(fh)
+        print("\n--- check set vs %s ---" % args.baseline)
+        _added, retired = compare_names(suite.names(),
+                                        old.get("checks") or [])
+
     if not summary["checks"]:
         raise SystemExit("error: %s registered no checks — nothing was "
                          "verified" % args.checks)
     if summary["failed"]:
+        sys.exit(1)
+    if retired and args.strict_baseline:
+        print("%d check(s) retired and --strict-baseline is set"
+              % len(retired), file=sys.stderr)
         sys.exit(1)
 
 

@@ -37,8 +37,8 @@ reported.
 | 0 | **Spec lock** | a device idea | you + user | decisions doc: locked choices verbatim, numbered open questions each with a recommendation; user answers or explicitly delegates every one |
 | 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry |
 | 2 | **Logical design** | resolved part list | agent (or you, if small) | `design.py` imports clean under **both** system Python and the CAD Python; every net, pin map and topology fact derives from it |
-| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0; power-design decision record written |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity**, 0 unconnected, zones filled headlessly inside the generator |
+| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0 — there is no board yet and a missing one is skipped, not failed); power-design decision record written |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity**, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`) |
 | 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders eyeballed |
 | 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything green | agent + you | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
@@ -50,8 +50,54 @@ Two ordering facts that are easy to get wrong:
   that during PCB work is a rework; discovering it at ERC time is free.
 - **The enclosure reads geometry out of the board files**, via
   `python3 scripts/kicad_geom.py BOARD.kicad_pcb --json` — outline, hole
-  positions, footprint positions. Never from a spec table alone. A spec table is
+  positions, footprint positions, courtyards, and which face each part's
+  hardware really protrudes on. Never from a spec table alone. A spec table is
   what the board was *supposed* to be.
+
+**What legitimately round-trips backwards.** Phases own their files, with one
+carve-out: geometry whose **count** the netlist sees but whose **position** it
+does not — mounting holes, fiducials, test points, keepout markers — is
+declared in `design.py` and its coordinates may be nudged by the PCB phase,
+which says so in its report. Changing the *count* of anything, or any net, part
+or pin map, is a barrier. State the permission in `design.py` next to the
+table, so a later agent does not have to file a barrier report over four
+numbers.
+
+## Project layout
+
+One convention, stated once, because phase 1 and phase 3 will otherwise each
+invent their own and the repo ends up with two directories called `lib`:
+
+```
+PROJECT/
+├── SPEC.md                    the decisions doc (phase 0) — the arbiter
+├── kicad/
+│   ├── design.py              the single logical source (phase 2)
+│   ├── gen_sch.py gen_pcb.py  the emitters
+│   ├── Makefile               from templates/Makefile
+│   ├── fab-profile.json       export assertions, NEXT TO the board it gates
+│   ├── lib/                   THE PRODUCTION LIBRARY: *.kicad_sym, *.pretty
+│   │                          — what fp-lib-table/sym-lib-table resolve
+│   ├── <board>.kicad_sch/pcb  a single-board project lives right here
+│   ├── <variant>/             …or one subdirectory per board variant
+│   └── proto/                 the gate slice: built and gated, never fabbed
+├── lib/
+│   ├── PROVENANCE.md          the per-asset provenance table (phase 1)
+│   └── reference/             vendored CROSS-CHECK EVIDENCE, built against by
+│                              nothing — keeping it next to production
+│                              geometry is how a later phase imports the wrong
+│                              file and nothing catches it
+├── case/                      the enclosure generator + checks.py
+├── fab/                       generated export packages
+└── .gitignore                 from templates/.gitignore, written at phase 0
+```
+
+`kicad_scaffold.py` discovers a library at `<project>/lib` or
+`<project>/../lib`, so both the single-board and the per-variant layout resolve
+`kicad/lib/` with no flags. A **verified pin table has exactly one home**:
+`design.py`. Phase 1 writes its tables there rather than into a scout-local
+generator, or two copies exist and can drift — which is the failure the
+one-table doctrine exists to prevent.
 
 ### Phase 0 in more detail
 
@@ -172,6 +218,14 @@ and the card holds the specifics.
 The test of a good card: the next session hits the same situation and does not
 have to rediscover anything.
 
+**Gap logs.** When a run is also validating the pipeline (a dry run, a new
+domain, a first board on an unfamiliar fab), it keeps a gap log — and **you own
+its numbering**: one document, one monotonically increasing counter, each phase
+appending to the existing sequence. A phase that opens its own numbering
+collides with another phase's, and every cross-reference written into project
+source becomes ambiguous the moment it happens. See `kb/README.md`, "Gap logs
+and their numbering".
+
 ## Model policy
 
 Encoded in `agents/*.md`, restated here so you know what you are dispatching:
@@ -235,14 +289,23 @@ Everything the pipeline verifies goes through these. Exit nonzero = failed gate.
 
 ```bash
 python3 scripts/preflight.py [--project DIR]        # env doctor; exact fixes on failure
-python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]   # ERC + DRC(parity) + unconnected
+python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME] [--sch-only]
+                                                    # ERC + DRC(parity) + unconnected
 KIPY    scripts/kicad_zonefill.py BOARD.kicad_pcb [-o OUT] # headless zone fill
 python3 scripts/kicad_fab.py PROJECT_DIR -o OUTDIR [--profile PROFILE.json]
-python3 scripts/kicad_geom.py BOARD.kicad_pcb [--json]     # outline, holes, positions
+python3 scripts/kicad_geom.py BOARD.kicad_pcb [--json]     # outline, holes, positions,
+                                                    # courtyards, pad-side truth
+python3 scripts/kicad_digest.py BOARD.kicad_pcb [--compare A B]
+                                                    # canonical KIID-free digest:
+                                                    # the determinism check
 python3 scripts/kicad_scaffold.py DIR NAME          # project + lib tables + severities
 python3 scripts/case_verify.py CHECKS.py            # numeric interference checks
 python3 scripts/report.py FILE.json                 # one-line summary of a kicad-cli report
 ```
+
+`kicad_gate.py --sch-only` is the phase-3 gate; a project with no board yet is
+also auto-detected and prints a PARTIAL verdict rather than failing. Run
+`case_verify.py` with the python your CAD library lives in.
 
 `KIPY` is KiCad's bundled Python — required wherever `pcbnew` is imported.
 Scripts discover `kicad-cli` and `pcbnew` on their own (platform defaults,

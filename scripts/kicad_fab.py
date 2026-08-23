@@ -6,11 +6,22 @@ PDFs and a drill report, pick-and-place for both sides, a grouped BOM, and the
 zip a fab actually wants uploaded.
 
     python3 scripts/kicad_fab.py build/left -o fab/left
-    python3 scripts/kicad_fab.py build/left -o fab/left --profile fab/left.json
+    python3 scripts/kicad_fab.py build/left -o fab/left \
+        --profile build/left/fab-profile.json
+
+WHERE THE PROFILE LIVES — one convention, and it is not negotiable: **next to
+the board project it describes**, `<project_dir>/fab-profile.json`.  Never
+under the output directory.  This tool WIPES its output directory on every run,
+so a profile stored inside it is deleted by the very run that read it: the run
+prints `ok`, the profile is gone, and the *next* run fails with "no such
+profile" at a distance from the cause.  Verified, and now refused at startup.
 
 Run this *after* `kicad_gate.py` passes and do not refill zones on the way out:
 the gerbers must be a plot of exactly the board DRC gated, or the files you
-send the fab are not the board you checked.
+send the fab are not the board you checked.  The export writes a
+`<name>-manifest.txt` recording the board hash, the tool versions, the
+assertion results and whatever verdict the gate left beside the project, so
+"was this zip gated?" is answerable six months later without archaeology.
 
 Copper layers are read from the board file, so a two-layer and a four-layer
 board need no different invocation.
@@ -36,7 +47,8 @@ knowledge, not tool knowledge.
       "assert": {
         "npth_holes": {"2.2": 6, "3.988": 22},
         "pth_min_holes": 100,
-        "placements": 101,
+        "placements": {"top": 12, "bottom": 89},
+        "expect_empty_layers": ["F.Paste"],
         "min_file_sizes": {"-F_Cu.gbr": 20000}
       }
     }
@@ -44,22 +56,41 @@ knowledge, not tool knowledge.
 `npth_holes` / `pth_holes` are {diameter_mm: expected_count}, matched with a
 tolerance because excellon rounds.  Slots are counted by their minor axis,
 which is how a fab tools them.
+
+`placements` takes either a scalar total or a **per-side split**, and the split
+is the one worth writing: the total is the one number a flip-sign error cannot
+change.  Flip a part to the wrong face and a 33-placement board still has 33
+placements, just 11/22 instead of 12/21 — and the export is the last chance to
+catch it before a stencil is cut.  Both `-pos-top.csv` and `-pos-bottom.csv`
+are already written; the split checks them.
+
+`expect_empty_layers` declares a layer that is *supposed* to have no apertures
+— e.g. F.Paste on a board whose every SMD part is bottom-side.  Emptiness is
+counted in aperture definitions (`%AD`), not bytes: a paste layer with nothing
+to stencil is 451 bytes of pure header, which passes any non-emptiness test and
+is indistinguishable from a layer dropped by accident.  Declaring the set also
+makes it **exhaustive** — any other aperture-free layer then fails, which is
+how a *newly* empty layer gets caught.  Declare nothing and undeclared empty
+layers are reported as notes instead.
 """
 
 import argparse
 import csv
 import glob
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+import time
 
 sys.dont_write_bytecode = True      # never leave __pycache__ in a project tree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import kicad_geom
-from _kicad_env import find_cli, run
+import report as report_mod
+from _kicad_env import cli_version, find_cli, run
 
 # Non-copper layers every fab package needs, in plot order.
 TECH_LAYERS = ["F.Mask", "B.Mask", "F.Silkscreen", "B.Silkscreen",
@@ -231,13 +262,39 @@ def collapse(refs):
     return ",".join(out)
 
 
-def make_bom(flat_csv, out_csv, bom_profile):
+def side_column(refs, sides):
+    """The assembly face(s) of one BOM group, told honestly.
+
+    `sides` maps ref -> (placement_side, pad_side).  A footprint placed on one
+    face whose copper pads are all on the other is a standard keyboard
+    construction — a hotswap socket: switch in from the top, socket soldered
+    underneath — and both the pos file and the BOM would otherwise report
+    `top`, agree with each other, and mislead.  So the column says where the
+    SOLDER goes and names the disagreement.
+    """
+    faces, flipped = set(), set()
+    for ref in refs:
+        placed, pads = sides.get(ref, (None, None))
+        if placed:
+            faces.add(placed)
+        if pads and pads not in ("both", placed):
+            flipped.add(pads)
+    if not faces:
+        return ""
+    text = "/".join(sorted(faces))
+    if flipped:
+        text += " (SOLDER %s: pads are there)" % "/".join(sorted(flipped))
+    return text
+
+
+def make_bom(flat_csv, out_csv, bom_profile, sides=None):
     """Regroup a flat per-symbol BOM into one line per distinct part.
 
     Grouped by (footprint, value, DNP): a footprint alone merges parts that
     differ electrically, and a value alone merges a 0603 with an 0805.
     """
     profile = bom_profile or {}
+    sides = sides or {}
     rewrites = [(re.compile(pat), repl)
                 for pat, repl in profile.get("value_rewrite", [])]
     notes_fp = profile.get("notes_by_footprint", {})
@@ -271,21 +328,27 @@ def make_bom(flat_csv, out_csv, bom_profile):
             notes_fp.get(footprint, "")
         populate = ("n/a (board feature)" if footprint in no_part
                     else ("no (DNP)" if dnp else "yes"))
-        rows.append([collapse(refs), value, footprint, len(refs), populate,
-                     note])
+        rows.append([collapse(refs), value, footprint, len(refs),
+                     side_column(refs, sides), populate, note])
     rows.sort(key=lambda r: natkey(r[0].split(",")[0].split("-")[0]))
 
     with open(out_csv, "w", newline="") as fh:
-        writer = csv.writer(fh)
+        # Header lines are prose for a human, not CSV data: through
+        # csv.writer, any line containing a comma comes out quoted and its
+        # neighbours do not, and the assembler-facing document is exactly where
+        # the formatting must not look broken — the whole point of these lines
+        # is to be read before anything is placed.  Only the table gets the
+        # writer.
         for line in profile.get("header", []):
-            writer.writerow([line])
-        writer.writerow(["Item", "Refs", "Value", "Footprint", "Qty",
+            fh.write(line + "\n")
+        writer = csv.writer(fh)
+        writer.writerow(["Item", "Refs", "Value", "Footprint", "Qty", "Side",
                          "Populate", "Notes"])
         for i, row in enumerate(rows, 1):
             writer.writerow([i] + row)
         writer.writerow([])
         writer.writerow(["", "TOTAL placements", "", "",
-                         sum(r[3] for r in rows), "", ""])
+                         sum(r[3] for r in rows), "", "", ""])
     return len(rows), sum(r[3] for r in rows)
 
 
@@ -317,9 +380,36 @@ def match_diameter(tools, wanted):
     return sum(n for dia, n in tools.items() if abs(dia - wanted) <= DIA_TOL)
 
 
+def apertures(path):
+    """Number of aperture definitions (`%AD`) in a gerber.
+
+    The honest measure of "does this layer plot anything".  File size is not:
+    an aperture-free paste layer is ~451 bytes of header and passes every
+    non-emptiness test.
+    """
+    n = 0
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("%AD"):
+                    n += 1
+    except OSError:
+        return None
+    return n
+
+
+def placement_rows(path):
+    """Number of placement rows in a pos CSV, or None if it is absent."""
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        rows = [l for l in fh.read().splitlines() if l.strip()]
+    return max(0, len(rows) - 1)                 # minus the header row
+
+
 def check(outdir, name, layers, assertions):
-    """Assert the export is sane. Returns a list of failure strings."""
-    fails = []
+    """Assert the export is sane. Returns (failures, notes) as string lists."""
+    fails, notes = [], []
     expected = ["-%s.gbr" % l.replace(".", "_") for l in layers]
     expected += REQUIRED_SUFFIXES
     expected += assertions.get("extra_files", [])
@@ -360,22 +450,166 @@ def check(outdir, name, layers, assertions):
             fails.append("PTH drill has %d holes, expected >= %d"
                          % (total, min_pth))
 
-    pos = os.path.join(outdir, name + "-pos-all.csv")
-    want_placements = assertions.get("placements")
-    if want_placements is not None and os.path.exists(pos):
-        with open(pos) as fh:
-            rows = [l for l in fh.read().splitlines() if l.strip()]
-        got = len(rows) - 1                     # minus the header row
-        if got != want_placements:
+    # Placements: a scalar total, or a per-side split checked against the two
+    # per-side files.  The split is what catches a part flipped to the wrong
+    # face, which leaves the total untouched.
+    want = assertions.get("placements")
+    if want is None:
+        want = assertions.get("placements_by_side")
+    if isinstance(want, dict):
+        for side, expected in sorted(want.items()):
+            suffix = {"top": "-pos-top.csv", "front": "-pos-top.csv",
+                      "bottom": "-pos-bottom.csv", "back": "-pos-bottom.csv",
+                      "all": "-pos-all.csv", "total": "-pos-all.csv"}.get(side)
+            if suffix is None:
+                fails.append("placements: unknown side %r (use top/bottom/all)"
+                             % side)
+                continue
+            got = placement_rows(os.path.join(outdir, name + suffix))
+            if got is None:
+                fails.append("placements %s: %s%s missing"
+                             % (side, name, suffix))
+            elif got != expected:
+                fails.append("placements %s: expected %d, got %d"
+                             % (side, expected, got))
+        top = placement_rows(os.path.join(outdir, name + "-pos-top.csv"))
+        bot = placement_rows(os.path.join(outdir, name + "-pos-bottom.csv"))
+        every = placement_rows(os.path.join(outdir, name + "-pos-all.csv"))
+        if None not in (top, bot, every) and top + bot != every:
+            fails.append("pos files disagree: %d top + %d bottom != %d all"
+                         % (top, bot, every))
+    elif want is not None:
+        got = placement_rows(os.path.join(outdir, name + "-pos-all.csv"))
+        if got is not None and got != want:
             fails.append("pos file has %d placements, expected %d"
-                         % (got, want_placements))
-    return fails
+                         % (got, want))
+
+    # Emptiness by aperture count, not bytes.  A declared empty-layer set is
+    # exhaustive: that is what makes a *newly* empty layer a failure instead of
+    # a silence.
+    declared = list(assertions.get("expect_empty_layers") or [])
+    counts = {}
+    for layer in layers:
+        path = os.path.join(outdir, "%s-%s.gbr" % (name, layer.replace(".", "_")))
+        got = apertures(path)
+        if got is not None:
+            counts[layer] = got
+    for layer in declared:
+        if layer not in counts:
+            fails.append("expect_empty_layers names %s, which this export "
+                         "does not plot" % layer)
+        elif counts[layer] != 0:
+            fails.append("%s is declared empty but defines %d aperture(s)"
+                         % (layer, counts[layer]))
+    for layer, got in sorted(counts.items()):
+        if got or layer in declared:
+            continue
+        line = ("%s plots no apertures (%d bytes of header only)"
+                % (layer, os.path.getsize(os.path.join(
+                    outdir, "%s-%s.gbr" % (name, layer.replace(".", "_"))))))
+        if declared:
+            fails.append(line + " and is not in expect_empty_layers")
+        else:
+            notes.append(line + " — declare it in expect_empty_layers if "
+                                "that is intended")
+    return fails, notes
+
+
+# ------------------------------------------------------------------- manifest
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def gate_verdict(project_dir, pcb):
+    """What the gate left beside this project, as report lines.
+
+    `kicad_gate.py` writes erc.json / drc.json next to the project.  Reading
+    them back is not the same thing as gating — but it is the difference
+    between a directory of gerbers that *claims* nothing and one that records
+    which report was on disk, what it said, and whether it predates the board
+    file it is supposed to describe.  A gate report older than the board is not
+    a gate of this board, and that is the check nobody remembers to do.
+    """
+    lines = []
+    board_mtime = os.path.getmtime(pcb) if os.path.exists(pcb) else 0
+    for base in ("erc.json", "drc.json"):
+        path = os.path.join(project_dir, base)
+        if not os.path.exists(path):
+            lines.append("  %-9s ABSENT — no gate report beside the project"
+                         % base)
+            continue
+        try:
+            doc = json.load(open(path))
+            counts = [(label, len([v for v in items
+                                   if v.get("severity") == "error"]),
+                       len(items))
+                      for label, items in report_mod.sections(doc)]
+            verdict = ", ".join("%s %d error(s)/%d item(s)" % c
+                                for c in counts)
+        except (ValueError, OSError) as exc:
+            verdict = "unreadable: %s" % exc
+        stale = "" if os.path.getmtime(path) >= board_mtime else \
+            "  STALE: older than the board file"
+        lines.append("  %-9s %s%s" % (base, verdict, stale))
+    return lines
+
+
+def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
+                   profile, bom_stats, fails, notes, cli):
+    """Stamp the provenance of this export into the output directory."""
+    lines = ["# %s — fab package manifest" % name,
+             "# Written by hw_forge scripts/kicad_fab.py. A directory of "
+             "gerbers is not",
+             "# self-evidently a plot of a validated board; this file is the "
+             "evidence.",
+             "",
+             "exported     %s (local time)"
+             % time.strftime("%Y-%m-%d %H:%M:%S"),
+             "project      %s" % os.path.abspath(project_dir),
+             "board        %s" % os.path.basename(pcb),
+             "  sha256     %s" % sha256(pcb),
+             "  bytes      %d" % os.path.getsize(pcb),
+             "schematic    %s" % os.path.basename(sch),
+             "  sha256     %s" % sha256(sch),
+             "profile      %s" % (os.path.abspath(profile_path)
+                                  if profile_path else "NONE — "
+                                  "non-emptiness only"),
+             ]
+    if profile_path:
+        lines.append("  sha256     %s" % sha256(profile_path))
+    lines += ["layers       %s" % ",".join(layers),
+              "bom          %d line(s), %d placement(s)" % bom_stats,
+              "tools        kicad-cli %s; python %s"
+              % (cli_version(cli) or "?", sys.version.split()[0]),
+              "",
+              "gate reports found beside the project:"]
+    lines += gate_verdict(project_dir, pcb)
+    lines += ["",
+              "assertions   %s"
+              % ("PASS (%d assertion group(s) in the profile)"
+                 % len(profile.get("assert") or {}) if not fails
+                 else "FAIL (%d)" % len(fails))]
+    for line in fails:
+        lines.append("  FAIL       %s" % line)
+    for line in notes:
+        lines.append("  note       %s" % line)
+    lines.append("")
+    lines.append("This manifest is NOT a substitute for running "
+                 "scripts/kicad_gate.py.")
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
 
 
 # ----------------------------------------------------------------------- main
 
 def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
-        clean=True):
+        clean=True, profile_path=None):
     """Export and check one project. Returns the number of failures."""
     profile = profile or {}
     name, sch, pcb = discover(project_dir, name)
@@ -400,10 +634,30 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
         shutil.rmtree(outdir)
     flat = export(cli, name, sch, pcb, outdir, layers, no_x2)
 
+    # Read the board once: the BOM's Side column, and the "placed on one face,
+    # soldered on the other" report, are facts about the board that the CLI's
+    # own exports discard.
+    sides, flipped = {}, []
+    try:
+        board = kicad_geom.read_board(pcb)
+    except (SystemExit, ValueError, OSError):
+        board = None
+    for fp in (board or {}).get("footprints", []):
+        ref = fp.get("ref")
+        if not ref:
+            continue
+        sides[ref] = (fp.get("side"), fp.get("pad_side"))
+        if fp.get("pad_side") not in (None, "both", fp.get("side")):
+            flipped.append((ref, fp["side"], fp["pad_side"], fp.get("lib")))
+
     lines, placements = make_bom(flat, os.path.join(outdir, name + "-bom.csv"),
-                                 profile.get("bom"))
+                                 profile.get("bom"), sides)
     os.remove(flat)
     print("  bom     %d lines, %d placements" % (lines, placements))
+    top = placement_rows(os.path.join(outdir, name + "-pos-top.csv"))
+    bot = placement_rows(os.path.join(outdir, name + "-pos-bottom.csv"))
+    if None not in (top, bot):
+        print("  sides   %d top, %d bottom" % (top, bot))
 
     zip_path, members = zip_gerbers(outdir, name)
     if zip_path:
@@ -411,11 +665,31 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
                                             os.path.basename(zip_path)))
 
     assertions = profile.get("assert") or {}
-    fails = check(outdir, name, layers, assertions)
+    fails, notes = check(outdir, name, layers, assertions)
+
+    # Reported, never failed: a footprint on one face with all its copper on
+    # the other is correct and standard (a hotswap socket: switch in from the
+    # top, socket soldered underneath).  The pos file reports the footprint's
+    # own layer, so it reads Side=top and must be soldered on the back — both
+    # files agree with each other and both mislead.  Say so here, where an
+    # assembler-facing document is being written.
+    grouped = {}
+    for ref, placed, pads, lib in flipped:
+        grouped.setdefault((lib, placed, pads), []).append(ref)
+    for (lib, placed, pads), refs in sorted(grouped.items()):
+        notes.append("%s (%s) placed %s, every pad %s — SOLDER ON THE %s"
+                     % (collapse(refs), lib, placed, pads, pads.upper()))
+
+    write_manifest(os.path.join(outdir, name + "-manifest.txt"), project_dir,
+                   name, sch, pcb, layers, profile_path, profile,
+                   (lines, placements), fails, notes, cli)
+
     files = [f for f in sorted(os.listdir(outdir))
              if os.path.isfile(os.path.join(outdir, f))]
     total = sum(os.path.getsize(os.path.join(outdir, f)) for f in files)
 
+    for line in notes:
+        print("  note    %s" % line)
     if fails:
         print("  FAILED (%d):" % len(fails))
         for line in fails:
@@ -444,11 +718,29 @@ def main():
     if args.profile:
         if not os.path.exists(args.profile):
             raise SystemExit("error: no such profile: %s" % args.profile)
+        # Refuse before doing any work: this tool wipes its output directory,
+        # so a profile living inside it is destroyed by the run that reads it.
+        # The run would SUCCEED and the *next* one would fail with "no such
+        # profile", a long way from the cause.  Verified behaviour, now a
+        # startup error.
+        if not args.keep:
+            out_real = os.path.realpath(args.out)
+            prof_real = os.path.realpath(args.profile)
+            if prof_real == out_real or prof_real.startswith(
+                    out_real + os.sep):
+                raise SystemExit(
+                    "error: the profile lives inside the output directory\n"
+                    "  profile: %s\n"
+                    "  outdir:  %s (wiped on every run — the profile would be "
+                    "deleted)\n"
+                    "  fix: keep the profile next to the board project, "
+                    "<project_dir>/fab-profile.json"
+                    % (prof_real, out_real))
         with open(args.profile) as fh:
             profile = json.load(fh)
 
     if fab(args.project_dir, args.out, profile, args.name, no_x2=args.no_x2,
-           clean=not args.keep):
+           clean=not args.keep, profile_path=args.profile):
         sys.exit(1)
 
 

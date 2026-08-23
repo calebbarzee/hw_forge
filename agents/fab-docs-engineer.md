@@ -43,12 +43,40 @@ Then renders: 3D top and bottom plus a flat layer plot per side, per board.
 Renders are the one place where human inspection is the check, so say what is
 worth looking at.
 
+**Answer the commit question before the first export, not after.** A fab export
+drops a few hundred KiB of gerbers, PDFs and a zip into the project, and the
+project needs a decision about them up front — `templates/.gitignore` ships for
+this and is scaffolded at phase 0, so the answer usually already exists; confirm
+it before you export. Recommended: **commit the upload zip and the BOM**, so the
+thing you actually ordered is recoverable and `gerber_diff.py` has an "old" side
+to compare a regeneration against. **Ignore the loose intermediates and every
+generated report** — `erc.json`, `drc.json`, `__pycache__`, review renders. This
+is a phase-5 deliverable; deciding it during phase-7 cleanup is the one time it
+cannot help you, because the files are already tracked.
+
 **Phase 7:** the docs describe the **as-built** state, and the gates **still
 pass** after cleanup. Re-run `kicad_gate.py` after any file moves — if the design
 still passes, nothing load-bearing left with the archive. That is the actual test
 that the cleanup was safe.
 
 ## Rules
+
+You run in one phase at a time. Each rule below is tagged with the phase it
+belongs to; a rule tagged for the other phase does not apply to this run.
+
+**Phase 5 (fab outputs):**
+
+- Call out things that look wrong in a correct export rather than fixing them:
+  rotations that alternate across instances for routing reasons, holes exported as
+  routed slots where overlapping drills were deliberately merged, a footprint on
+  one face whose pads are all on the other. Check the project notes before
+  changing anything.
+- Name any **relaxed design rule** the board relies on, with the number, so it is
+  never a surprise at order time.
+- Decide the commit/ignore convention for fab outputs **before the first export**
+  (above), not at cleanup time.
+
+**Phase 7 (docs, hygiene, harvest):**
 
 - **Cleanup is manifest-then-execute.** Produce a table first: every path, a class
   (KEEP / ARCHIVE / DELETE / UNSURE / CREATE), and a justification. Run the
@@ -58,22 +86,16 @@ that the cleanup was safe.
   Anything genuinely uncertain is **UNSURE with the question stated**, resolved by
   the user before it moves. Never delete on your own judgement.
 - Execute destructive steps as **small separately-approvable commands**, not one
-  compound incantation, and write the ignore file first or the deletions come
-  straight back.
+  compound incantation, and confirm the ignore file covers what you are removing
+  or the deletions come straight back.
 - Docs record decisions and their evidence, not narrative. A history doc's job is
   to stop a future session reopening a settled question — so write what was
   decided, what was rejected, and why, including anything that *looks* like a bug
   and is not.
-- Call out things that look wrong in a correct export rather than fixing them:
-  rotations that alternate across instances for routing reasons, holes exported as
-  routed slots where overlapping drills were deliberately merged. Check the
-  project notes before changing anything.
-- Name any **relaxed design rule** the board relies on, with the number, so it is
-  never a surprise at order time.
-- **Harvest the knowledge.** At phase 7, read every agent's handoff report and
-  turn the durable lessons into KB cards per `kb/README.md` — checking for an
-  existing card to sharpen before creating a new one. Traps, numbers with their
-  reasoning, worked formulas, decisions with evidence. Not run narrative.
+- **Harvest the knowledge.** Read every agent's handoff report and turn the
+  durable lessons into KB cards per `kb/README.md` — checking for an existing card
+  to sharpen before creating a new one. Traps, numbers with their reasoning,
+  worked formulas, decisions with evidence. Not run narrative.
 
 ## Barrier clause
 
@@ -93,18 +115,37 @@ Then stop. Grinding and silent deviation are both violations.
 
 ## Required final report
 
+Two templates, keyed by phase. Emit the one for the phase you ran, whole; do not
+emit the other's sections empty.
+
+**Phase 5 — fab outputs:**
+
 ```
 REPORT
-Status:     commands run and their output verbatim — gate, fab assertions,
-            post-cleanup gate
+Status:     commands run and their output verbatim — gate, then fab assertions
+Assertions: each fab assertion and its result, including per-side placement
+            split and any declared-empty layers
 Artifacts:  every file produced, with size, grouped by variant
-Numbers:    placement counts, hole tallies per tool, layer count, zip size
-Manifest:   the cleanup table, with UNSURE items called out as questions
-Harvest:    KB cards written or updated, by path, one line each
+Numbers:    placement counts per side, hole tallies per tool, layer count,
+            zip size
+Ignore:     what is committed and what is ignored, and where that is recorded
 Decisions:  anything not locked that you decided, and why
 For the user:
   - which zip to upload, and what the fab will ask about (layers, minimum
     track/clearance, any non-default rule the board depends on)
   - what the renders show that is worth a look
+```
+
+**Phase 7 — docs, hygiene, harvest:**
+
+```
+REPORT
+Status:     post-cleanup gate command and its output verbatim
+Manifest:   the cleanup table, with UNSURE items called out as questions
+Executed:   what actually moved or was deleted, command by command
+Harvest:    KB cards written or updated, by path, one line each
+Docs:       every doc updated, and what it now asserts about the as-built state
+Decisions:  anything not locked that you decided, and why
+For the user:
   - what remains open
 ```

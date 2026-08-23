@@ -42,10 +42,21 @@ DEFAULT_ROOTS = {
               r"C:\Program Files\KiCad\9.0"),
 }
 
-# wxWidgets prints this to stderr on every headless pcbnew call.  It is noise,
-# not an error: the KiCad libraries expect a wxApp that a headless script never
-# creates.  Filtered everywhere so real errors stay visible.
-WX_NOISE = re.compile(r"wxApp|assert .* failed in |stdpbase\.cpp")
+# Noise every KiCad invocation on some installs prints to stderr before its
+# real output.  Filtered everywhere so real errors stay visible — and that is
+# not cosmetic: callers report the LAST stderr line as the reason a tool
+# failed, so ~50 lines of trailing warning noise means the actual error line is
+# the one thing nobody sees.
+#
+#   wxApp…          the KiCad libraries expect a wxApp a headless script never
+#                   creates.
+#   Fontconfig…     a homebrew-fontconfig / KiCad interaction, not a KiCad
+#                   fault: every kicad-cli call emits a wall of
+#                   `Fontconfig warning: "…/conf.d/…" invalid attribute
+#                   'xsi:nil'` first.
+NOISE = re.compile(r"wxApp|assert .* failed in |stdpbase\.cpp"
+                   r"|^Fontconfig (warning|error):")
+WX_NOISE = NOISE                    # kept: the old name is used by callers
 
 
 def default_roots():
@@ -124,7 +135,7 @@ def run(argv, **kw):
 
 
 def strip_wx_noise(text):
-    return "\n".join(l for l in text.splitlines() if not WX_NOISE.search(l))
+    return "\n".join(l for l in text.splitlines() if not NOISE.search(l))
 
 
 def cli_version(cli):

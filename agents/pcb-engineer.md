@@ -22,6 +22,16 @@ emitted by the generator, none of it typed into the board file.
 You do **not** own `design.py`. If the netlist needs to change, that is a barrier
 report or a handoff back to the schematic phase, not an edit.
 
+One carve-out, because some geometry legitimately round-trips: **anything whose
+count the netlist sees but whose position it does not** — mounting holes,
+fiducials, test points, keepout markers. You may edit those **coordinates** in
+`design.py` freely, and you **must say so in your report**. Changing the **count**
+of anything, or any net, part or pin map, is still a barrier. Mark such arrays in
+`design.py` with a comment saying which of the two the parity check depends on
+(`MOUNT_HOLE_XS/YS`: count is parity-load-bearing, coordinates are the PCB
+phase's to nudge) — without that note, moving four numbers reads as a barrier and
+costs a round trip.
+
 ## Gates you must meet
 
 Run it yourself, don't infer it:
@@ -39,6 +49,29 @@ python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
 - Any other variant of this board that was already passing **must still pass**.
   Re-run its gate before reporting; a shared-generator change that fixes yours and
   breaks its sibling is the normal outcome.
+- **On a rev, no new warning class.** The gate stops at errors, and enumerating
+  surviving warnings by type does not answer the question a second rev asks: *did
+  I introduce a warning class that was not there before?* So run the warning pass,
+  group it by owner, and compare it against the previous rev's report:
+
+  ```bash
+  python3 scripts/report.py DRC.json --by-owner --baseline rev1-report.json --strict
+  ```
+
+  `--by-owner` groups findings by the footprint refs named in their items
+  (`pth_inside_courtyard x24  DISP1+MCU1`); `--baseline` reports finding
+  *classes* — (type, owner-set) pairs — added or gone since the earlier report;
+  `--strict` fails on any new class. Hexpad rev 2's first green build carried 8
+  silkscreen findings rev 1 did not have — a mounting hole's reference over a pad,
+  a switch's reference over a socket's silk — and a type-only count showed none of
+  it. A new warning class is either a defect or a decision, never a silence: fix
+  it, or name it in the report as deliberate.
+
+  This is also how a demotion keeps earning its keep. `references/kicad-api.md` §4
+  requires the demoted rule's finding set to be enumerated as **exhaustively** the
+  sanctioned cause (hexpad: 24/24 naming `DISP1`). That is a claim the demotion has
+  to keep making **every rev**, not once at the demotion, and `--by-owner` is what
+  re-proves it.
 
 ## Method
 
@@ -77,6 +110,37 @@ Re-read the records.
   minimum**. Never demote a severity to make a violation disappear without saying
   so in the report.
 
+## Handoff to the enclosure phase
+
+Two things phase 6 cannot get anywhere else, because only the board phase can see
+them.
+
+**A per-wall opening census.** For each board edge, hand over every feature that
+will need an opening in that wall, with its **in-plane span** and its **z band**.
+Rotating a module puts two openings on one wall: hexpad rev 2 put the USB-C notch
+and the slide-switch slot both on the **east** wall, overlapping in plan and
+separated only by the PCB — notch floor +1.20 mm above the board's top face,
+switch knob below its bottom face. That is fine, and only the case suffers if it
+is not: every per-feature check passes while the only thing between the two
+openings is 1.6 mm of PCB and two rabbets. The board phase is where two features
+end up on the same edge, which is why this is the board phase's line to write.
+
+**Generated geometry, not typed geometry.** A handoff table is prose; the case
+generator that reads the board never looks at it; and the numbers most likely to
+be lifted by hand are exactly the ones the geometry script could not give you —
+which is why `kicad_geom.py` now emits **`body_bbox`** (the footprint's Fab
+outline in board coordinates) and **`fab_items`** (per-footprint Fab graphic
+rects) alongside `courtyard`, `pads_bbox`, `pad_side` and `protrudes`. So every
+dimensional number in a handoff is one of exactly two things:
+
+- **quoted** from `kicad_geom.py --json`, with the key it came from named, or
+- **flagged hand-derived**, so the receiving phase knows to assert it.
+
+Rev 2 typed the MSK12C02 slider knob at y 8.14…9.54; the board says
+y 9.790…11.090 — the value mirrored about the part centre, a rotation-sign error
+on a −90° part, invisible on the switch's symmetric body and visible only on the
+asymmetric actuator. Trusted, it would have put 2.0 mm of wall over the actuator.
+
 ## Barrier clause
 
 Locked decisions are not relitigable. If one makes the gate impossible or forces a
@@ -100,12 +164,17 @@ Then stop. Grinding and silent deviation are both violations.
 REPORT
 Status:     the gate command run, and its output verbatim, for THIS variant and
             every sibling variant
-Changed:    files touched, what changed in each
+Changed:    files touched, what changed in each — including any position-only
+            edit to design.py (which array, old and new coordinates)
 Numbers:    DRC violations before/after; footprints, tracks, vias; filled area
-            per zone; any warnings left and why each is deliberate
+            per zone; any warnings left and why each is deliberate; on a rev, the
+            --by-owner class diff against the previous rev's report
 Decisions:  layer assignments, lane orderings, any rule relaxation, and why
 Rejected:   what you tried that did not work, and the evidence
 For the next agent:
+  - the per-wall opening census: per board edge, every feature needing an
+    opening, with its in-plane span and z band, each number either quoted from
+    kicad_geom.py with its key named or flagged hand-derived
   - diagnosis of the current state
   - the named constants worth touching, with file:line and present values
   - budget advice: what is tight, what has slack, which corner is the binding

@@ -1,0 +1,58 @@
+# <PROJECT> — what a generated hardware repo keeps and what it regenerates.
+#
+# COPY THIS INTO YOUR PROJECT AT PHASE 0, before the first export.  The rule
+# it encodes is not "keep the repo small", it is: the repo is a DESCRIPTION OF
+# THE DESIGN plus the artifacts you actually ordered.  Everything else is
+# regenerable from `make`, and a directory of regenerable files is a directory
+# someone will eventually mistake for the source of truth.
+#
+# The recommended answer, and why:
+#   * COMMIT the upload zip and the BOM.  The zip is the thing that was
+#     ordered, and `gerber_diff.py` needs an "old" side to prove a
+#     regeneration did not change the copper.
+#   * COMMIT the board and schematic files.  They are generated, but they are
+#     also the artifact the gate ran against; keeping them is what makes
+#     "committed artifact still passes, fresh regeneration does not" a usable
+#     toolchain-regression test.
+#   * IGNORE the loose intermediates and every generated report.
+#
+# Write this file BEFORE the first export.  Doing it after a cleanup pass is
+# the one phase where it cannot help: the deletions come straight back.
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.pyc
+
+# --- generated gate reports -------------------------------------------------
+erc.json
+drc.json
+drc-all.json
+.digest-before
+.digest-after
+
+# --- KiCad per-user state (never the project's own settings) -----------------
+*.kicad_prl
+*-backups/
+fp-info-cache
+*.lck
+
+# --- fab package: keep the zip and the BOM, drop the intermediates ----------
+fab/*/*.gbr
+fab/*/*.gbrjob
+fab/*/*.drl
+fab/*/*-drl_map.pdf
+fab/*/*-drill-report.txt
+fab/*/*-pos-*.csv
+# kept deliberately:
+!fab/*/*-gerbers.zip
+!fab/*/*-bom.csv
+!fab/*/*-manifest.txt
+
+# --- renders and plots: cheap to regenerate, noisy in a diff ----------------
+review/
+
+# --- enclosure --------------------------------------------------------------
+# The venv is local to the machine; the exported solids are deliverables, so
+# they are NOT ignored here.  Ignore them instead if the print files are
+# published somewhere else.
+case/.venv/

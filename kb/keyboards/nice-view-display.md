@@ -1,8 +1,8 @@
 ---
 domain: keyboards/display
-tags: [nice-view, sharp-memory-lcd, ls011b7dh03, spi, spi0, display, nice-nano, zmk-display, macro-pad, hexpad, dry-run, mounting, stack-height, mechanical]
-source: hexpad resource-scout run, 2026-08-22 — nicekeyboards.com/docs/nice-view, zmkfirmware/zmk (app/boards/shields/nice_view*), ceoloide/ergogen-footprints (commit 48935f54), HookyQR/nice_view_pcb (commit f09725d5), this machine's nice-nano-v2.md and zmk-electrical.md cards; follow-up run, 2026-08-22 — Nice-Keyboards/nicekeyboards.com raw mdx source, typeractive.xyz (nice-view product page + no-solder-spring-headers), github.com/joric/nrfmicro wiki
-date: 2026-08-22
+tags: [nice-view, sharp-memory-lcd, ls011b7dh03, spi, spi0, display, nice-nano, zmk-display, macro-pad, hexpad, dry-run, mounting, stack-height, mechanical, enclosure, display-bay, usb-c-clearance]
+source: hexpad resource-scout run, 2026-08-22 — nicekeyboards.com/docs/nice-view, zmkfirmware/zmk (app/boards/shields/nice_view*), ceoloide/ergogen-footprints (commit 48935f54), HookyQR/nice_view_pcb (commit f09725d5), this machine's nice-nano-v2.md and zmk-electrical.md cards; follow-up run, 2026-08-22 — Nice-Keyboards/nicekeyboards.com raw mdx source, typeractive.xyz (nice-view product page + no-solder-spring-headers), github.com/joric/nrfmicro wiki; hexpad phase-6 case run (case/hexpad_case.py, 239-check verify() pass (board rev 2)) — see 2a; hexpad phase-7 harvest (§3.6 re-scoped)
+date: 2026-08-23
 confidence: researched
 ---
 
@@ -125,6 +125,82 @@ fully researched rather than merely "not found"):**
     resolution is project-specific, not a general nice!view fact, so it is not stated as
     settled for every board using this display.
 
+## 2a. The enclosure consequence, worked (hexpad phase 6, `verify()`-passing)
+
+The stack height stays unresolved as a *number*, but its consequences are now fully
+quantified, and the important finding is that **the case does not care and the board
+does**.
+
+**Design it as an open bay whose window rim is the bezel.** The display cannot be roofed
+(a 1.5 mm MX plate leaves 3.50 mm; the display's underside is at 6.3–8.5 mm) and a raised
+shroud stands proud of the print's plate-down reference face, which
+`references/mechanical.md` §5 forbids. So the deck gets one open window sized on the
+**union** of the nice!nano's and the nice!view's plan envelopes (each unioned with its own
+courtyard — see `nice-nano-v2.md` on courtyards being the *smaller* rect), and the display
+stands proud of the plate. On hexpad: window **18.88 × 36.85 mm**, its width set by the
+*module* underneath, not the 14 mm display, so ~2.4 mm of nice!nano shows along each long
+side. That is the look; there is no printable alternative.
+
+**The load-bearing clearance is display-underside vs the nice!nano's USB-C shell** (6.30 mm
+above the host PCB) — *whenever the display's plan envelope covers the receptacle*, which
+depends on the layout and is the single most useful thing to check early (see "layout that
+removes it" below):
+
+| stack height | display body | proud of a 5.00 mm plate top | clear of the USB-C shell |
+|---|---|---|---|
+| 6.30 (low end of the cited range) | 6.30 – 9.20 | +4.20 mm | **0.00 mm — touching** |
+| **7.00 (Typeractive figure)** | 7.00 – 9.90 | +4.90 mm | **+0.70 mm** |
+| 8.50 (tallest generic socket cited) | 8.50 – 11.40 | +6.40 mm | +2.20 mm |
+
+So the honest band is **6.60 – 8.50 mm** if you want a 0.30 mm keepout, and the 5 mm
+citation would be an outright collision. This is consistent with — and arguably explains —
+the named first-hand report that the standard kit hardware "doesn't fit on top of the
+nice!nano v2s": the standard 2.54 mm solder header/socket pair is nowhere near 7 mm.
+
+**Two more consequences worth knowing before laying a board out this way:**
+- With the display's short edge flush to the board's own edge, its north face ends up
+  **directly above the USB-C receptacle mouth**, separated only by the shell's ~0.6 mm
+  overhang. A plug inserts, but its overmold sits visually flush against the display's
+  edge. Setting the display back 2–3 mm from the board edge costs nothing and removes it.
+- The display standing 4.90 mm proud of the plate is *below* typical 1u keycap height
+  (~9.5–11 mm above the plate), so **the keycaps are the display's protection**. On a
+  keyless corner of a board it would be fully exposed.
+
+Make the stack a named parameter, keep the case clear of the display entirely, and assert
+the display-vs-USB-shell clearance — that assertion is the one that fails when the wrong
+header arrives. Worked example: `hexpad/case/hexpad_case.py` (`display_stack_h`,
+`display_band`).
+
+### The layout that removes the clearance entirely (hexpad rev 2)
+
+**Rotate the module so USB exits a SIDE edge, lay the display along the module's long axis,
+and set the display back from that edge by more than the receptacle's depth.** The display
+then sits *beside* the receptacle instead of over it, and the whole z problem above
+disappears — the stack height stops being a collision risk and becomes a cosmetic
+ride-height choice.
+
+hexpad rev 2, measured: module at rot −90 with USB east, receptacle shell
+x 44.875 … 52.225 (7.35 mm deep including its 0.60 mm overhang), display body
+x 8.625 … 44.625 — i.e. **set back 7.00 mm from the board's east edge and stopping 0.25 mm
+short of the shell.** Consequences:
+
+| | display over the receptacle (rev 1) | display beside it (rev 2) |
+|---|---|---|
+| clearance that governs | display underside vs 6.30 mm shell top | display underside vs the module's own top-side parts (~4.30 mm) |
+| at the band floor (6.30) | **0.00 mm — touching** | **+2.00 mm** |
+| at 7.00 default | +0.70 mm | +2.70 mm |
+| plug overmold | 0.60 mm from the display's edge | 7.60 mm of horizontal clearance |
+| the assertion | a **z** check that fails on the wrong header | a **plan** check that cannot fail on a header at all |
+
+**Set-back rule**: `display_setback > receptacle_depth − shell_overhang` (7.00 > 6.75 here).
+Cost: nothing — the display is 36 mm long on a 65 mm board either way. So on any new board,
+**place the display beside the connector, not over it**; the 0.00 mm case above is a layout
+choice, not a fact about the part.
+
+The keycap observation survives the rotation: 4.90 mm proud of the plate is below typical 1u
+keycap height (~9.5–11 mm), so the caps still shield the display — but only if there are
+keys around it.
+
 **Electrical**: 3.3V, <10µA typical static current (memory-in-pixel technology), 3-wire
 SPI, Sharp LS011B7DH03 panel, 160×68px, 1.08" diagonal, ~30Hz refresh (`serial-vcom-interval
 = <33>` in the ZMK overlay ≈ 30.3Hz — numerically consistent with the vendor-stated 30Hz).
@@ -157,7 +233,10 @@ the nice!nano socket footprint family already proven in `nice-nano-v2.md`.
 ## 3. Checklist status (was §3, now closed out)
 
 1. **Pinout** — done, two-source (with the caveat above). ✅
-2. **Mechanical** — outline/header-position done, three-source. Socket/mounting-standoff
+2. **Mechanical** — outline/header-position done, three-source; the *enclosure consequences* of the
+   unresolved stack height are now fully quantified in 2a (open-bay pattern, and the
+   display-vs-USB-C-shell clearance table that makes 6.30mm a touching fit and any 5mm
+   claim a collision). Socket/mounting-standoff
    height above the nice!view PCB was researched exhaustively in a follow-up pass and
    **has no authoritative answer** — two community sources conflict (7mm vs. 5mm) and
    the official kit gives no figure at all, with a named real-world report that it does
@@ -171,8 +250,16 @@ the nice!nano socket footprint family already proven in `nice-nano-v2.md`.
    not confirmed against a working example. ⚠️
 4. **Electrical** — done. ✅
 5. **Footprint/symbol** — done: generated, not adopted, from the verified table. ✅
-6. **Pin-map interaction** — partially done (SPI0 claimed by the display; `zmk-electrical.md`
-   already documents SPI1's colliding defaults, P1.13/P1.11). A full enumeration of every
-   SPI/UART instance's default pinctrl against a specific board's chosen key GPIOs is
-   realistically a per-project, phase-2 task once GPIO candidates exist — flagged as
-   mis-scoped to phase 1 in this run's gap log (`hexpad/GAPS.md`). ⚠️
+6. **Pin-map interaction** — done as far as phase 1 can take it, and **the collision check
+   is owned by the schematic phase (phase 3), not by this checklist.** Phase 1's deliverable
+   is the *list*: the display claims `spi0` at CS P0.06 (D1) / MOSI P0.17 (D2) / SCK P0.20
+   (D3) per §2, an addressable-LED chain claims its own `&spi3` (`zmk-electrical.md`), and
+   the module's default peripheral pinmux — `uart0`, `i2c0`, `spi1`, blue LED, ext-power,
+   plus the NFC pads and the fact that `spi0`/`spi2`/`spi3` start unclaimed — is tabled in
+   `nice-nano-v2.md`, "Default peripheral pinmux — the enumeration, done once". **Hand that
+   list to the schematic phase.** Checking it against the chosen key GPIOs is phase 3's job
+   because at phase 1 the key GPIOs do not exist yet: GPIO assignment *is* a schematic
+   decision. The original item asked phase 1 to "check them against the macro pad's key
+   GPIOs before locking the map" — a check against pins nobody has chosen, logged as
+   mis-scoped in this run's gap log (`hexpad/GAPS.md`). ✅ (enumerate + hand off);
+   the collision check itself belongs to phase 3.

@@ -55,6 +55,36 @@ relevant reference section.
 A card may mix confidences internally; when it does, mark the weaker claims inline
 (`(needs-verification)`) and set the frontmatter to the **weakest** load-bearing claim.
 
+### Scoped negatives — a negative must name its own search
+
+A card that records a negative ("no footprint for X exists locally", "no vendor figure for
+Y", "no upstream example of Z") **must name exactly what was searched**: the paths globbed
+and the patterns tried. Not the conclusion alone. This is a requirement, not advice — a
+negative without its scope is unusable, because a later reader cannot tell whether it still
+holds.
+
+The near-miss that forces the rule: `local-libraries.md` correctly said "no nice!view
+footprint was observed in either foostan `kbd.pretty` or ScottoKeebs `ScottoKicad`". A
+time-pressured read turns that into "no nice!view footprint exists locally" — and a full
+parameterized nice!view footprint generator was sitting one directory over in
+`z_board/ergogen/footprints/`, outside that card's search scope entirely. A cached negative
+narrower than its own phrasing causes **under**-searching, which is the exact opposite of
+what the recall convention exists to buy. Write the scope so the negative can be re-tested,
+or invalidated, without redoing the whole search.
+
+### Pin-role facts — port first, label derived
+
+State every pin-role fact in **port** terms first (`P0.09`, `P1.13`) and derive the
+silkscreen or compatibility label from the card's own mapping table. Never write the labels
+out again by hand in prose next to the table that defines them.
+
+Live instance: `nice-nano-v2.md`'s headline trap is "the `D` labels are pro-micro
+compatibility names, not nRF ports" — and its own prose then repeated the mistake it warns
+about ("D9/D10 are on the same castellations as NFC (P0.09/P0.10)") directly beside a table
+mapping D10 → P0.09, D16 → P0.10, D9 → P1.06. A pin map that trusted the prose would have
+skipped a good pin (D9) and used an NFC pin (D16). Prose adjacent to a correct table is
+where this class of error hides, because the table's correctness reads as the paragraph's.
+
 ## Recall convention
 
 At the **start of every phase**, search the KB before doing any work:
@@ -86,6 +116,61 @@ At the **end of every run**, harvest:
    so it is not relitigated.
 6. Corrections beat additions: if a run proves an existing card wrong, fix the card in
    place and note the correction and its date in the body.
+
+**Trigger rule: an UNSURE in a project doc is a harvest trigger.** Anything a project doc
+marks UNSURE, or records as an open risk or a deferred decision, gets harvested **at the
+point the project doc is written** — not left for a later run to rediscover independently.
+`z_board/CLEANUP.md` recorded months earlier that `ergogen/footprints` is a submodule-mode
+gitlink (`git ls-files -s` shows mode `160000`) with **no `.gitmodules` anywhere in the
+repo** — exactly the bare-gitlink trap the research doctrine already names. Nobody ran
+harvest on that line, so the KB carried no warning, and a later run nearly re-vendored from
+that fragile path. The knowledge existed; only the harvest was missing.
+
+## Gap logs and their numbering
+
+A validation or dry-run project keeps **one** gap log document with **one** monotonically
+increasing counter, and the **orchestrator owns the numbering** — not the phase agent. A
+phase appends to the existing sequence; it never restarts at 1 and never opens its own
+numbering.
+
+On hexpad, phases 4 and 5 both opened at `## 29`, so `#29`–`#38` named two different gaps
+each, and cross-references already written into project source (`GAPS #25`, `GAPS #40`)
+became ambiguous the moment it happened. Ambiguity is immediate and unrecoverable from the
+log alone.
+
+The acceptable alternative, for phases that run in parallel: **per-phase prefixed ids**
+(`P4-1`, `P6-3`) allocated by the phase itself, which cannot collide. Either convention
+works. Having neither does not.
+
+**Corollary:** whoever renumbers a gap log afterwards leaves an old → new remap in the
+document. Project source files cite the old numbers, and a renumber without a remap breaks
+every one of those citations silently.
+
+## Revision regression contracts
+
+The same idea one level up. When a project is **revised** rather than built fresh,
+the check *set* is as much an artifact as the check *result*. "All green" says
+nothing about how many checks stopped running to get there, and a shrinking suite
+is invisible from the outside: hexpad's case suite went 215 → 239 checks across
+rev 2, and nothing in the run distinguished the one legitimately retired check
+from a quietly deleted one.
+
+The convention: **dump the check names before the revision, diff them after, and
+record every retirement with its reason.** A retired check with a stated geometric
+reason is knowledge worth harvesting; a retired check with no reason is a
+regression nobody can see. The names are the artifact, not the count.
+
+It applies to both gate families the pipeline has:
+
+| Gate family | Dump / compare |
+|---|---|
+| mechanical check names | `case_verify.py --dump-names FILE` / `--baseline FILE` |
+| DRC/ERC finding classes | `report.py --by-owner` / `--baseline FILE` |
+
+Harvest picks up the **reasons**, not the counts. "This check no longer applies
+because the display moved 7 mm west and no longer overlaps the receptacle in plan"
+is exactly the kind of durable fact a later revision needs — it names the check to
+re-add the moment the display moves back.
 
 ## Layout
 

@@ -14,6 +14,20 @@ into it, so nothing depends on the user's global KiCad configuration:
     python3 scripts/kicad_scaffold.py build/left boardname \\
         --severity npth_inside_courtyard=warning
     python3 scripts/kicad_scaffold.py build/left --repatch
+    python3 scripts/kicad_scaffold.py build/left --repatch \\
+        --severity npth_inside_courtyard=warning     # ADDS it to the sidecar
+
+EVOLVING THE OVERRIDE SET.  `--repatch` restores what the sidecar holds, so
+adding a demotion to a project's scaffolder flags and then only ever running
+`--repatch` changes nothing: the board keeps failing DRC on a rule the project
+believes it demoted, and nothing says why.  Two fixes, both here now:
+
+  * `--repatch` accepts `--severity` / `--design-rule` / `--net-class` and
+    MERGES them into the sidecar first.  Overrides are additive by nature, so
+    this is the same operation as scaffolding, minus the library tables.
+  * `--repatch` prints what it restored, and warns when the flags it was handed
+    are *wider* than what the sidecar held — the silent case that cost the
+    confusion.
 
 THE POST-SaveBoard RE-PATCH — read this before writing a generator.
 
@@ -148,15 +162,71 @@ def save_overrides(project_dir, overrides):
     return path
 
 
-def repatch(project_dir, name=None, quiet=True):
+def merge_into_overrides(project_dir, severities=None, rules=None,
+                         net_class=None, quiet=True):
+    """Add overrides to the sidecar without rewriting the library tables.
+
+    Returns (overrides, added) where `added` names only the keys this call
+    introduced or changed — which is what the caller prints, because "the
+    sidecar already had that" and "the sidecar has it now" are different
+    answers to "why is my demotion not taking effect".
+    """
+    overrides = load_overrides(project_dir)
+    added = []
+
+    sev = dict(overrides.get("rule_severities") or {})
+    for rule, level in (severities or {}).items():
+        if sev.get(rule) != level:
+            added.append("severity %s=%s" % (rule, level))
+        sev[rule] = level
+
+    merged_rules = dict(overrides.get("rules") or {})
+    for key, value in (rules or {}).items():
+        if merged_rules.get(key) != value:
+            added.append("rule %s=%s" % (key, value))
+        merged_rules[key] = value
+
+    classes = overrides.get("net_classes") or [dict(DEFAULT_NET_CLASS)]
+    if net_class:
+        default = dict(classes[0])
+        for key, value in net_class.items():
+            if default.get(key) != value:
+                added.append("net-class %s=%s" % (key, value))
+            default[key] = value
+        classes = [default] + list(classes[1:])
+
+    overrides = {"rule_severities": sev, "rules": merged_rules,
+                 "net_classes": classes}
+    save_overrides(project_dir, overrides)
+    if added and not quiet:
+        for line in added:
+            print("  added to %s: %s" % (OVERRIDES_FILE, line))
+    return overrides, added
+
+
+def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
+            net_class=None):
     """Re-apply hwforge-overrides.json to every .kicad_pro in the directory.
 
     Idempotent and safe to call when there is nothing to do, so a generator
     can call it unconditionally after SaveBoard.  Returns the list of files
     changed.
+
+    Any severities/rules passed here are merged into the sidecar FIRST, so
+    `--repatch --severity foo=warning` is how an override set grows.  Without
+    that, a project that added a demotion to its scaffolder flags and only ever
+    ran `--repatch` would keep failing DRC on a rule it believed it demoted.
     """
+    if severities or rules or net_class:
+        merge_into_overrides(project_dir, severities, rules, net_class,
+                             quiet=quiet)
     overrides = load_overrides(project_dir)
     if not overrides:
+        if not quiet:
+            print("no %s in %s — nothing to restore. If a generator's "
+                  "SaveBoard() ran,\n  the project file is now pcbnew's "
+                  "defaults: scaffold it once with the full flag set."
+                  % (OVERRIDES_FILE, project_dir))
         return []
     pros = ([os.path.join(project_dir, name + ".kicad_pro")] if name
             else sorted(glob.glob(os.path.join(project_dir, "*.kicad_pro"))))
@@ -179,8 +249,18 @@ def repatch(project_dir, name=None, quiet=True):
             json.dump(pro, fh, indent=2)
         touched.append(pro_path)
         if not quiet:
-            print("re-patched %s (%d severity override(s))"
-                  % (pro_path, len(overrides.get("rule_severities", {}))))
+            # Print what was restored, not just how many: a demotion that is
+            # not in this list is a demotion that is not in effect, and that
+            # is the whole failure this output exists to make visible.
+            sev = overrides.get("rule_severities") or {}
+            rul = overrides.get("rules") or {}
+            print("re-patched %s" % pro_path)
+            for rule, level in sorted(sev.items()):
+                print("  severity  %s -> %s" % (rule, level))
+            for key, value in sorted(rul.items()):
+                print("  rule      %s = %s" % (key, value))
+            if not sev and not rul:
+                print("  (sidecar holds no severities or design rules)")
     return touched
 
 
@@ -224,8 +304,18 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
     # Written even when empty: its presence is the signal to a generator that
     # `repatch()` is the project's convention, and it is where the next
     # severity override goes.
+    #
+    # `merged_rules`, not `rules`: the whole point of the sidecar is that
+    # SaveBoard() reverts the .kicad_pro to pcbnew's defaults (min_clearance
+    # measured coming back as 0.0), so --repatch has to restore the SCAFFOLDED
+    # state, not only the fraction of it that happened to arrive on the command
+    # line.  Persisting CLI-only rules made every project restate hw_forge's
+    # own defaults as --design-rule flags to get them back — and the failure
+    # was silent, because the net-class clearance IS persisted and governs
+    # track-to-track spacing, so a board could pass a DRC that no longer
+    # enforced the board minimum with nothing to say so.
     save_overrides(project_dir, {"rule_severities": severities,
-                                 "rules": rules or {},
+                                 "rules": merged_rules,
                                  "net_classes": [merged_net]})
     if not quiet:
         print("scaffolded %s (%s): %d symbol lib(s), %d footprint lib(s), "
@@ -262,8 +352,30 @@ def main():
                     help="footprint library row (default: discover ../lib)")
     args = ap.parse_args()
 
+    net_class = parse_pairs(args.net_class)
+    for key in list(net_class):
+        if key != "name":
+            net_class[key] = float(net_class[key])
+
     if args.repatch:
-        touched = repatch(args.dir, args.name, quiet=False)
+        # Flags given with --repatch are MERGED into the sidecar, so an
+        # override set can grow without a full re-scaffold.  Warning when the
+        # sidecar was narrower than the flags is the point: that mismatch is
+        # exactly the state in which a project's demotion silently does
+        # nothing.
+        before = load_overrides(args.dir)
+        touched = repatch(args.dir, args.name, quiet=False,
+                          severities=parse_pairs(args.severity),
+                          rules=parse_pairs(args.design_rule, numeric=True),
+                          net_class=net_class)
+        wanted = parse_pairs(args.severity)
+        missing = sorted(k for k, v in wanted.items()
+                         if (before.get("rule_severities") or {}).get(k) != v)
+        if missing:
+            print("  note: %d override(s) were NOT in %s before this run (%s)."
+                  "\n        A --repatch-only build would not have applied "
+                  "them." % (len(missing), OVERRIDES_FILE,
+                             ", ".join(missing)))
         if not touched:
             print("nothing to re-patch in %s (no %s, or no .kicad_pro)"
                   % (args.dir, OVERRIDES_FILE))
@@ -271,10 +383,6 @@ def main():
     if not args.name:
         ap.error("NAME is required unless --repatch is given")
 
-    net_class = parse_pairs(args.net_class)
-    for key in list(net_class):
-        if key != "name":
-            net_class[key] = float(net_class[key])
     scaffold(args.dir, args.name,
              severities=parse_pairs(args.severity),
              rules=parse_pairs(args.design_rule, numeric=True),

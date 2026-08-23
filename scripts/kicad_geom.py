@@ -15,7 +15,7 @@ Coordinates are raw KiCad board coordinates: millimetres, x east, **y south**.
 Enclosure code almost always wants y negated to get a right-handed frame; do
 that conversion at the boundary, once, and keep every table in board coords.
 
-Two traps this file exists to encapsulate:
+Three traps this file exists to encapsulate:
 
   * Footprint rotation is stored counterclockwise-as-seen-on-screen, and file
     coordinates are y-south, so in file coordinates the rotation is
@@ -24,6 +24,56 @@ Two traps this file exists to encapsulate:
   * A pad's `(at ...)` is footprint-local and must be rotated by the parent
     footprint's angle before it means anything.  Absolute hole positions are
     what the case needs; the local ones are a trap for the unwary.
+  * **A footprint's `side` says where it is PLACED, not where its hardware
+    is.**  `side` is read from the footprint's `layer`, and a hotswap keyboard
+    socket is a *front*-face footprint whose pads are declared on B.Cu and
+    whose 1.85 mm of socket body plus 2.20 mm of switch pin live entirely
+    UNDER the board.  Filtering `side == "bottom"` to build an underside
+    clearance ledger therefore misses every switch cell on the board — and
+    every clearance check passes, because the ledger never contained them.
+    (Measured on a 6-key board: the underside free band read 14.96 mm that
+    way; including the sockets the real figure is 5.52 mm.)  So each footprint
+    also carries:
+
+        pad_side    "top" / "bottom" / "both" — where its COPPER is
+        through_hole  whether any pad is drilled
+        protrudes   the faces whose obstacle ledger must contain this part:
+                    its own side, plus the opposite face when the pads are
+                    there, plus the opposite face for through-hole parts whose
+                    clipped solder tails stand proud on the far side.
+
+    Build an underside ledger from `protrudes`, never from `side`.
+
+JSON KEYS PER FOOTPRINT — these are the names `--json` emits, and the printed
+table's column headings match them so a consumer never has to guess
+(`ROTATION`, not `ROT`):
+
+    ref value lib layer      identity, as the file has it
+    x y rotation             placement: board coords, degrees
+    side                     the footprint's own layer — PLACEMENT ONLY
+    pad_side through_hole
+    protrudes                where the HARDWARE is (see the trap above)
+    courtyard                F.CrtYd/B.CrtYd bbox, board coords
+    pads_bbox                union of every copper pad, board coords
+    body_bbox                F.Fab/B.Fab bbox — the part BODY, board coords
+    fab_items                each Fab graphic separately: kind, layer, bbox
+
+`courtyard`, `pads_bbox` and `body_bbox` are rotation-resolved, and `None` when
+the footprint carries no such geometry.
+
+An enclosure's obstacle ledger is made of courtyards — but the courtyard is
+*not* automatically the larger box.  A socketed module's courtyard is routinely
+drawn around its pad grid and comes out SMALLER than the part body, so an
+obstacle rect is `courtyard ∪ body_bbox` (see references/mechanical.md §4).
+That is why `body_bbox` is exported rather than left to a handoff table in
+prose: the Fab outline *is* the part's own body, it is right there in the file,
+and a number that has to be retyped is a number that drifts.
+
+`fab_items` is the same argument one step down.  A protruding actuator — a
+slide-switch knob, a button plunger, a connector shell — is usually its own
+group of Fab lines, and the case has to slot exactly that.  Every item is
+reported separately, in board coordinates with the rotation already applied, so
+the caller unions the ones it means instead of writing a bespoke pcbnew script.
 """
 
 import argparse
@@ -35,6 +85,10 @@ import sys
 GRAPHIC_ITEMS = ("gr_rect", "gr_line", "gr_arc", "gr_circle", "gr_poly")
 FP_GRAPHIC_ITEMS = ("fp_rect", "fp_line", "fp_arc", "fp_circle", "fp_poly")
 OUTLINE_LAYER = "Edge.Cuts"
+COURTYARD_LAYERS = ("F.CrtYd", "B.CrtYd")
+# The Fab layers carry the part's own BODY outline (and often its actuator),
+# which is the rect the courtyard is not.
+FAB_LAYERS = ("F.Fab", "B.Fab")
 
 
 # --------------------------------------------------------------- s-expressions
@@ -216,6 +270,69 @@ def _pad_hole(node, ref, origin, angle):
             "owner": ref, "pad": atoms(node)[1] if len(atoms(node)) > 1 else ""}
 
 
+def _union(boxes):
+    """Bounding box of a list of [x0,y0,x1,y1], or None."""
+    boxes = [b for b in boxes if b]
+    if not boxes:
+        return None
+    return [round(min(b[0] for b in boxes), 4),
+            round(min(b[1] for b in boxes), 4),
+            round(max(b[2] for b in boxes), 4),
+            round(max(b[3] for b in boxes), 4)]
+
+
+def _graphic_bbox(node, head, origin, angle):
+    """Bbox of one footprint graphic, in board coordinates."""
+    pts = [rotate(px, py, angle) for px, py in _bbox_points(node, head)]
+    if not pts:
+        return None
+    return [min(p[0] for p in pts) + origin[0],
+            min(p[1] for p in pts) + origin[1],
+            max(p[0] for p in pts) + origin[0],
+            max(p[1] for p in pts) + origin[1]]
+
+
+def _pad_bbox(node, origin, angle):
+    """Bbox of one pad's copper, in board coordinates.
+
+    The pad's own `(at x y rot)` rotation composes with the footprint's, so the
+    corners are built in the pad's frame first and only then rotated by the
+    parent angle.  A circle/oval is bounded by its size box, which is what a
+    clearance ledger wants anyway.
+    """
+    at, size = kid(node, "at"), kid(node, "size")
+    if at is None or size is None:
+        return None
+    coords = nums(at)
+    lx = coords[0] if coords else 0.0
+    ly = coords[1] if len(coords) > 1 else 0.0
+    pad_rot = coords[2] if len(coords) > 2 else 0.0
+    dims = nums(size, 2)
+    if len(dims) < 2:
+        return None
+    hw, hh = dims[0] / 2.0, dims[1] / 2.0
+    pts = []
+    for cx, cy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+        rx, ry = rotate(cx, cy, pad_rot)
+        rx, ry = rotate(rx + lx, ry + ly, angle)
+        pts.append((rx + origin[0], ry + origin[1]))
+    return [min(p[0] for p in pts), min(p[1] for p in pts),
+            max(p[0] for p in pts), max(p[1] for p in pts)]
+
+
+def _pad_faces(pad_layer_names):
+    """'top' / 'bottom' / 'both' / None from a set of pad layer names."""
+    faces = set()
+    for name in pad_layer_names:
+        if name.startswith("*."):                    # *.Cu = every copper face
+            return "both"
+        if name.endswith(".Cu"):
+            faces.add("bottom" if name.startswith("B.") else "top")
+    if not faces:
+        return None
+    return faces.pop() if len(faces) == 1 else "both"
+
+
 def _footprint(node):
     """{ref, value, lib, x, y, rotation, side}, plus its holes and outline bits."""
     lib = atoms(node)[1] if len(atoms(node)) > 1 else ""
@@ -239,10 +356,55 @@ def _footprint(node):
           "y": round(y, 4), "rotation": rot, "side": side, "layer": layer}
 
     holes = []
+    pad_boxes, pad_layer_names, through = [], set(), False
     for pad in kids(node, "pad"):
         hole = _pad_hole(pad, ref or lib, (x, y), rot)
         if hole:
             holes.append(hole)
+        pad_type = atoms(pad)[2] if len(atoms(pad)) > 2 else ""
+        if pad_type == "thru_hole":
+            through = True
+        if pad_type != "np_thru_hole":               # NPTH carries no copper
+            pad_layer_names.update(layers_of(pad))
+            box = _pad_bbox(pad, (x, y), rot)
+            if box:
+                pad_boxes.append(box)
+
+    courtyard = _union([_graphic_bbox(item, head, (x, y), rot)
+                        for head in FP_GRAPHIC_ITEMS
+                        for item in kids(node, head)
+                        if layer_of(item) in COURTYARD_LAYERS])
+
+    # Fab geometry, item by item: the body outline, and any actuator drawn on
+    # the same layer.  Kept separate (rather than only unioned) because the
+    # thing a case slots is usually one group of these, not all of them.
+    fab_items = []
+    for head in FP_GRAPHIC_ITEMS:
+        for item in kids(node, head):
+            if layer_of(item) not in FAB_LAYERS:
+                continue
+            box = _graphic_bbox(item, head, (x, y), rot)
+            if box:
+                fab_items.append({"kind": head, "layer": layer_of(item),
+                                  "bbox": [round(v, 4) for v in box]})
+    body = _union([f["bbox"] for f in fab_items])
+
+    # `protrudes` is the hardware fact; `side` is only the placement fact.
+    pad_side = _pad_faces(pad_layer_names)
+    other = "bottom" if side == "top" else "top"
+    faces = {side}
+    if pad_side in ("top", "bottom") and pad_side != side:
+        faces.add(pad_side)
+    if pad_side == "both" or through:
+        faces.add(other)                             # tails stand proud
+    fp.update({"courtyard": courtyard,
+               "body_bbox": body,
+               "fab_items": fab_items,
+               "pads_bbox": _union(pad_boxes),
+               "pad_layers": sorted(pad_layer_names),
+               "pad_side": pad_side,
+               "through_hole": through,
+               "protrudes": sorted(faces)})
 
     outline = []
     for head in FP_GRAPHIC_ITEMS:
@@ -379,14 +541,69 @@ def print_table(board, max_rows=0):
           % (len(fps), sum(f["side"] == "top" for f in fps),
              sum(f["side"] == "bottom" for f in fps)))
     rows = fps if not max_rows else fps[:max_rows]
-    print("  %-10s %-22s %9s %9s %6s %s"
-          % ("REF", "VALUE", "X", "Y", "ROT", "SIDE"))
+
+    def wh(box):
+        return ("%sx%s" % (fmt(box[2] - box[0]), fmt(box[3] - box[1]))
+                if box else "-")
+
+    # Column headings are the JSON keys, deliberately: ROTATION, not ROT.
+    print("  %-10s %-18s %9s %9s %8s %-6s %-12s %-12s %s"
+          % ("REF", "VALUE", "X", "Y", "ROTATION", "SIDE", "COURTYARD",
+             "BODY_BBOX", "PROTRUDES"))
     for f in rows:
-        print("  %-10s %-22s %s %s %6g %s"
-              % (f["ref"] or "-", (f["value"] or "-")[:22],
-                 fmt(f["x"], 9), fmt(f["y"], 9), f["rotation"], f["side"]))
+        print("  %-10s %-18s %s %s %8g %-6s %-12s %-12s %s%s"
+              % (f["ref"] or "-", (f["value"] or "-")[:18],
+                 fmt(f["x"], 9), fmt(f["y"], 9), f["rotation"], f["side"],
+                 wh(f.get("courtyard")), wh(f.get("body_bbox")),
+                 ",".join(f.get("protrudes") or []),
+                 "  <- pads are %s" % f["pad_side"]
+                 if f.get("pad_side") not in (None, f["side"]) else ""))
     if max_rows and len(fps) > max_rows:
         print("  ... %d more (use --json for all)" % (len(fps) - max_rows))
+
+    # The courtyard-smaller-than-the-body trap, called out by name: an obstacle
+    # rect for one of these must be courtyard ∪ body_bbox, or a deck window
+    # sized on the courtyard reaches over a part that is really there.
+    smaller = []
+    for f in fps:
+        crt, body = f.get("courtyard"), f.get("body_bbox")
+        if not crt or not body:
+            continue
+        over = max(crt[0] - body[0], crt[1] - body[1],
+                   body[2] - crt[2], body[3] - crt[3])
+        if over > 0.01:
+            smaller.append((f["ref"] or f["lib"], over))
+    if smaller:
+        print("\n%d footprint(s) whose BODY overhangs their own COURTYARD — "
+              "obstacle rects\nfor these are `courtyard ∪ body_bbox`, never "
+              "the courtyard alone:" % len(smaller))
+        for ref, over in sorted(smaller, key=lambda r: -r[1]):
+            print("  %-10s body reaches %smm past the courtyard"
+                  % (ref, fmt(over)))
+
+    # The one line that stops an underside ledger being built from `side`.
+    liars = [f for f in fps
+             if f.get("pad_side") not in (None, "both", f["side"])]
+    if liars:
+        print("\n%d footprint(s) placed on one face with all copper on the "
+              "other — their\nhardware is NOT where `side` says. Build "
+              "obstacle ledgers from `protrudes`:" % len(liars))
+        for f in liars:
+            print("  %-10s placed %-6s pads %-6s  %s"
+                  % (f["ref"] or f["lib"], f["side"], f["pad_side"],
+                     f["lib"]))
+    for key, where, consequence in (
+            ("courtyard", "F.CrtYd/B.CrtYd",
+             "no courtyard means no DRC courtyard check and no obstacle rect"),
+            ("body_bbox", "F.Fab/B.Fab",
+             "the part's body must then come from its datasheet or KB card, "
+             "and be asserted")):
+        missing = [f for f in fps if not f.get(key)]
+        if missing:
+            print("\n%d footprint(s) with no %s geometry (%s) — %s:"
+                  % (len(missing), key, where, consequence))
+            print("  %s" % ", ".join(sorted(f["ref"] or f["lib"]
+                                            for f in missing)))
 
 
 def main():
