@@ -81,6 +81,25 @@ is invisible from the outside:
     ... revise the board, rebuild the case ...
     python3 scripts/case_verify.py checks.py --baseline rev1-names.json
 
+**THE SUITE NAME IS PART OF A CHECK'S IDENTITY, so it must never carry a
+revision, a date, or a board hash.**  `compare_names()` keys identity on
+`(suite, name)`, so calling a suite `mycase (board rev 2)` — the obvious thing
+to do, since the suite is verifying that board — retires the *entire* baseline
+the moment the revision number changes.  Measured: `416 check(s) now, 239 in
+the baseline: 416 added, 239 retired`, not one of them for a geometric reason,
+and `--strict-baseline` in CI would have failed the run with 239 unexplainable
+retirements with no way to tell which one mattered.  Normalising the suite name
+recovered the real answer: 233 added, 59 retired.  Put the revision in a
+`v.section()` or in a check message, where `name_of()` blanks the number
+anyway.
+
+This script now defends itself against that: a trailing `(rev N)` /
+`(board rev N)` is stripped from both sides before comparing, `--map-suite
+OLD=NEW` renames one explicitly, and a comparison whose suite-name sets are
+DISJOINT while every baseline check retires is reported as the rename it is —
+then retried blind to suite names, because that answer is nearly always the one
+you wanted.
+
 reports `added / retired / newly-failing / fixed`.  Retiring a check is often
 correct — a measured case: rev 1's tightest number was "display underside
 clears the USB-C shell top" at 0.70 mm, and 0.00 mm at the assumption band's
@@ -163,8 +182,28 @@ def box_distance(a, b):
 
 
 def gap(a, b):
-    """Clear distance between two shapes, negative when they interfere."""
-    return box_distance(a, b) - a.radius - b.radius
+    """Signed clear distance between two shapes; negative = they interfere.
+
+    Separated in at least one axis, this is the box-to-box distance less both
+    radii — exactly right for rect-rect, circle-rect and circle-circle.
+
+    Overlapping in BOTH axes, a clamped box distance is 0 and the whole answer
+    disappears: every interference reads as "0.000 mm", so a shape 5 mm inside
+    another is indistinguishable from one just touching it.  So the overlapping
+    case returns the **penetration depth** — the shallowest translation that
+    would separate them — as a negative number.  That is what lets an
+    interference be *asserted* (`Suite.interferes`) rather than only avoided,
+    which is what a rejected design alternative needs.
+
+    Clearance checks are unaffected: they compare against a non-negative
+    minimum, so a pair that was failing still fails, with a number that now
+    says how badly.
+    """
+    dx = max(a.x0 - b.x1, b.x0 - a.x1)
+    dy = max(a.y0 - b.y1, b.y0 - a.y1)
+    if dx >= 0.0 or dy >= 0.0:
+        return box_distance(a, b) - a.radius - b.radius
+    return max(dx, dy) - a.radius - b.radius
 
 
 # -------------------------------------------------------------------- suite
@@ -229,25 +268,73 @@ class Suite(object):
             print("  %s %s" % ("ok  " if ok else "FAIL", message))
         return bool(ok)
 
-    def clearance(self, a, b, minimum, tol=TOL):
-        """`a` must stand at least `minimum` mm clear of `b`."""
+    def clearance(self, a, b, minimum, tol=TOL, name=None):
+        """`a` must stand at least `minimum` mm clear of `b`.
+
+        Pass `name=` where `b` is chosen dynamically (the nearest of a set, the
+        tallest part over a region): otherwise `b`'s ref lands in the check's
+        identity and the check retires the moment a different part wins.
+        """
         got = gap(a, b)
         return self.check(got >= minimum - tol,
                           "%s to %s: %.3fmm (need %.3f)"
-                          % (a.name, b.name, got, minimum))
+                          % (a.name, b.name, got, minimum), name)
 
-    def nearest(self, a, others, minimum, tol=TOL):
+    def nearest(self, a, others, minimum, tol=TOL, name=None):
         """Clearance to the closest of many obstacles — one line, not N.
 
         This is what keeps a check run readable when a part must clear every
         footprint on a face: the failure names the offender.
+
+        **The offender is in the MESSAGE, never in the identity.**  The winning
+        obstacle is the check's *answer*, and an identity coupled to its own
+        answer retires whenever the answer changes: "H4's boss clears every
+        part on the underside" was never removed, weakened or even edited, and
+        four of one revision's 48 retirements were nothing but a different part
+        becoming the nearest one.  So the derived name counts the obstacles and
+        omits the winner.
         """
+        stable = name or name_of("%s to nearest of %d obstacles"
+                                 % (a.name, len(others)))
         if not others:
-            return self.check(True, "%s: no obstacles to clear" % a.name)
+            # Same identity as the populated case, deliberately: a part whose
+            # obstacle set emptied has not retired its check, it has passed it.
+            return self.check(True, "%s: no obstacles to clear" % a.name,
+                              stable)
         worst = min(((gap(a, b), b.name) for b in others))
         return self.check(worst[0] >= minimum - tol,
                           "%s to nearest of %d (%s): %.3fmm (need %.3f)"
-                          % (a.name, len(others), worst[1], worst[0], minimum))
+                          % (a.name, len(others), worst[1], worst[0], minimum),
+                          stable)
+
+    def interferes(self, a, b, at_least=0.0, tol=TOL, name=None):
+        """`a` and `b` must OVERLAP, by at least `at_least` mm of depth.
+
+        The mirror of `clearance()`, and the only assertion shape a **rejected
+        alternative** can use: a role doc that asks for "what you modelled and
+        dropped, with the reason" gets a far stronger artifact when the reason
+        is an assertion, because then the rejection cannot be quietly
+        un-rejected by a later revision.  (Cite: folding a connector notch into
+        a deck rectangle eats 0.475 mm of a fastener seat — asserted as an
+        interference, so nobody can "fix" the rectangle back.)
+
+        Without this, a generator had to reach into this module's internals for
+        a private `gap()` to say the one thing its role doc asked for.
+        """
+        depth = -gap(a, b)
+        return self.check(depth >= at_least - tol,
+                          "%s interferes with %s: %.3fmm deep (need >= %.3f)"
+                          % (a.name, b.name, depth, at_least), name)
+
+    def gap(self, a, b):
+        """Signed clear distance between two shapes; negative = interfering.
+
+        Exported on the Suite so a generator can compute a clearance without
+        importing module internals — asserting on it is `clearance()` or
+        `interferes()`, but a *derived* number (a bay edge, a slot width) often
+        needs the raw value.
+        """
+        return gap(a, b)
 
     def inside(self, part, region, margin=0.0, tol=TOL):
         """`part` must sit wholly inside `region`, with `margin` to spare."""
@@ -381,20 +468,64 @@ def run_checks(path, only=None, loud=True):
     return suite
 
 
-def compare_names(current, baseline, indent="  "):
+# A trailing revision tag in a suite name: "(rev 3)", "(board rev 3.1)",
+# "(revision 2)".  Stripped from BOTH sides before comparing, because a suite
+# named after the board it verifies is the obvious convention and it silently
+# retires the whole baseline.
+_SUITE_REV = re.compile(r"\s*[\(\[]\s*(?:board\s+)?rev(?:ision)?\.?\s*"
+                        r"[0-9][0-9.]*\s*[\)\]]\s*$", re.IGNORECASE)
+
+
+def normalise_suite(name, mapping=None):
+    """A suite name with any explicit rename applied and a rev tag stripped."""
+    name = (mapping or {}).get(name, name)
+    return _SUITE_REV.sub("", name or "").strip()
+
+
+def compare_names(current, baseline, indent="  ", map_suite=None,
+                  suite_blind=False):
     """Print added / retired / newly-failing / fixed. Returns (added, retired).
 
     Identities are compared as a MULTISET, because a suite legitimately
     registers the same check shape many times — one per fastener boss, one per
     key cell — and "there are three of these now, there were four" is a real
     answer that a set would swallow.
+
+    Suite names are normalised first (`--map-suite`, then a trailing revision
+    tag), and a comparison in which every baseline check retires against a
+    DISJOINT set of suite names is reported as a rename and retried blind: that
+    pattern is never a real revision.
     """
+    def key(row):
+        if suite_blind:
+            return ("", row["name"])
+        return (normalise_suite(row.get("suite"), map_suite), row["name"])
+
     def tally(rows):
-        return collections.Counter((r["suite"], r["name"]) for r in rows)
+        return collections.Counter(key(r) for r in rows)
 
     now, was = tally(current), tally(baseline)
-    ok_now = {(r["suite"], r["name"]): r["ok"] for r in current}
-    ok_was = {(r["suite"], r["name"]): r["ok"] for r in baseline}
+    ok_now = {key(r): r["ok"] for r in current}
+    ok_was = {key(r): r["ok"] for r in baseline}
+
+    # The rename, caught before 239 lines of noise are printed as if they were
+    # geometry.  Retried blind rather than refused: name-only is the comparison
+    # the caller wanted, and saying so is what keeps it honest.
+    if not suite_blind and was and not (set(now) & set(was)):
+        suites_now = {s for s, _ in now}
+        suites_was = {s for s, _ in was}
+        if suites_now.isdisjoint(suites_was):
+            print("%sSUITE RENAMED, not revised: %s -> %s. Every baseline "
+                  "check would retire\n%sfor that reason alone — a suite name "
+                  "is part of a check's identity, so it\n%smust not carry a "
+                  "revision, a date or a board hash. Comparing on check\n"
+                  "%snames only; fix the generator, or pass --map-suite "
+                  "OLD=NEW."
+                  % (indent, ", ".join(sorted(suites_was)) or "(unnamed)",
+                     ", ".join(sorted(suites_now)) or "(unnamed)",
+                     indent, indent, indent))
+            return compare_names(current, baseline, indent, map_suite,
+                                 suite_blind=True)
 
     added = sorted(k for k in now if k not in was)
     retired = sorted(k for k in was if k not in now)
@@ -443,7 +574,21 @@ def main():
     ap.add_argument("--strict-baseline", action="store_true",
                     help="with --baseline, fail the run if any check present "
                          "in the baseline no longer exists")
+    ap.add_argument("--map-suite", action="append", metavar="OLD=NEW",
+                    help="rename a baseline suite before comparing, for a "
+                         "suite that was renamed between revisions "
+                         "(repeatable)")
+    ap.add_argument("--suite-blind", action="store_true",
+                    help="compare check identities on the check name alone, "
+                         "ignoring which suite registered them")
     args = ap.parse_args()
+
+    map_suite = {}
+    for item in args.map_suite or ():
+        if "=" not in item:
+            ap.error("--map-suite expects OLD=NEW, got %r" % item)
+        old_name, new_name = item.split("=", 1)
+        map_suite[old_name.strip()] = new_name.strip()
 
     suite = run_checks(args.checks, args.suite, loud=not (args.quiet or args.json))
     summary = suite.summary()
@@ -474,7 +619,9 @@ def main():
             old = json.load(fh)
         print("\n--- check set vs %s ---" % args.baseline)
         _added, retired = compare_names(suite.names(),
-                                        old.get("checks") or [])
+                                        old.get("checks") or [],
+                                        map_suite=map_suite,
+                                        suite_blind=args.suite_blind)
 
     if not summary["checks"]:
         raise SystemExit("error: %s registered no checks — nothing was "

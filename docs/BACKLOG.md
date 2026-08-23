@@ -6,11 +6,18 @@ it is not a list of things nobody looked at. Each item names the gap numbers it
 covers in `hexpad/GAPS.md`, why it is deferred rather than done, and what would
 have to be true to close it.
 
-The rule that put these here rather than in the last harvest: **a fix that
-cannot be verified in the same pass that writes it is not a fix.** Three of the
-four below need a mechanism the pipeline does not yet have; the fourth needs a
-packaging decision. Writing a doc line about any of them would have produced a
-rule with nothing behind it, which is worse than a known gap.
+The rule that put these here rather than in a harvest: **a fix that cannot be
+verified in the same pass that writes it is not a fix.** Four of the six below
+need a mechanism the pipeline does not yet have (B1, B2, B3, B5), one needs a
+packaging decision (B4), and one needs a cross-project convention before it can
+safely write into someone's source (B6). Writing a doc line about any of them
+would have produced a rule with nothing behind it, which is worse than a known
+gap.
+
+**B5 and B6 are the deferred halves of gaps whose doctrine DID land** — the
+distinction worth preserving: the rule that stops the bug recurring is written
+and the tool that would catch it automatically is not, so the gaps read as fixed
+in `hexpad/GAPS.md` and as open here.
 
 ---
 
@@ -162,14 +169,90 @@ the right thing by instruction rather than by improvisation.
 
 ---
 
+## B5 — `kicad_pourcheck.py`: island count and narrowest channel per zone
+
+**Covers:** gaps 77, 83, and the script half of 81.
+
+Three revisions lost copper to one class of failure, and every time it was
+invisible until after a fill and a DRC run:
+
+- a ~300 mm² GND island fenced in by two lanes and two buses, whose only escape
+  was a 1.10 mm window with a 0.6 mm via keepout in the middle of it — **0.075 mm**
+  of pourable channel against a 0.20 mm `SetMinThickness`, and **no clearance
+  violation anywhere**;
+- 198 mm² of GND lost by extending an existing bus lane west, because the
+  *absence* of copper along that lane was the pocket's only vent, and nothing in
+  any artefact marks a vent;
+- plane pads orphaned by a part changing faces, reported by **zone position**
+  instead of by pad, so the message points at a zone corner and not at the part.
+
+All three are computable at generation time from artefacts the generator already
+holds: flood the zone polygon minus (copper ⊕ clearance) on a `min_thickness`
+grid, count components, compare against the number of distinct pad groups, and
+report **per zone: island count, the narrowest channel, its coordinate, and the
+two items bounding it.** Plus the static half of the third: for every pad whose
+net has a zone, assert the pad's layer set intersects that zone's layer, reported
+**by ref and pad number**.
+
+**Why deferred.** The doctrine half of all three landed this pass — the lane
+separation arithmetic (`2 × zone_clearance + min_thickness`, and `via_r +
+zone_clearance` more for a via) in `electronics.md` §7, the "extending a lane is a
+pour change, re-check island count" rule beside it, the face-change/plane-access
+rule in §10.3, and the upstream-of-DRC note in `kicad-api.md` §4. The script does
+not, because **no hw_forge reader parses zones**: `kicad_geom.py` reads
+footprints, pads, holes and Edge.Cuts and has no notion of a zone outline, a net,
+a track or a via. A polygon flood fill needs either that parser extended by a
+large fraction of its own size, or a `pcbnew` dependency — which makes the
+checker un-runnable under system python, i.e. un-runnable in the same shell as
+the rest of the gate. Writing it against `drc.json` instead is not an option
+either: that JSON is the *output* of the fill, which is the thing being checked
+too late.
+
+**To close:** decide the parser question first — extend the s-expr reader to
+zones, tracks, vias and nets (the honest answer, and it unlocks several other
+checks), or accept a `pcbnew`-only tool gated behind the bundled interpreter the
+way `gen_pcb.py` already is. Then the flood fill is ~60 lines, and the three
+measured cases above are its regression suite.
+
+---
+
+## B6 — Writing adopted placements back into a generator
+
+**Covers:** gap 79, second half.
+
+`kicad_geom.py --diff --as-constants` prints the moved set as a pasteable python
+dict, and `--diff --strict` verifies that a regeneration reproduced it to the
+micron — which closes the *verification* half of the hand-placement round trip
+(see `agents/pcb-engineer.md`). What is still manual is the paste: a human moves
+eight numbers from stdout into the emitter's own constants.
+
+**Why deferred.** Writing into someone's generator means knowing its shape, and
+emitters legitimately differ — a dict keyed on ref, per-part named constants
+(`ENC_XY = (2.50, 2.75)`), a table keyed on cell index. A tool that rewrote python
+source would have to impose one convention on every project or parse and edit
+arbitrary assignments, and getting that wrong fails **silently**: a board
+generated from the wrong adopted coordinate is perfectly clean. The `--strict`
+re-diff catches exactly that failure, which is why the remaining risk is
+acceptable and why automating the paste is an ergonomics win rather than a
+correctness one.
+
+**To close:** settle a convention for where adopted placements live — a single
+`ADOPTED = {...}` in `design.py`, which is the shape `--as-constants` already
+emits — and `--adopt-into design.py` becomes a safe in-place rewrite of one named
+assignment.
+
+---
+
 ## Not in this file
 
 Two things worth stating so they are not mistaken for backlog:
 
 - **Every other gap from the dry run is either fixed or explicitly wontfix.**
-  44 of 49 landed in this pass; one (gap 9) is works-as-intended. See
-  `hexpad/GAPS.md` for the per-gap disposition and `docs/DRYRUN-HEXPAD.md` for
-  the verdict.
+  Across three harvest rounds, gaps 1–94: **89 fixed** (four of them — 77, 79,
+  81, 83 — fixed as doctrine with a script remainder deferred to B5/B6), **four
+  deferred outright** (3, 6, 11, 19 → B1–B4), and **one wontfix** (9,
+  works-as-intended). See `hexpad/GAPS.md` for the per-gap disposition and
+  `docs/DRYRUN-HEXPAD.md` for the verdict.
 - **The SWIG → IPC (`kipy`) migration is roadmap, not backlog.** It is forced
   work with a known deadline (SWIG is deprecated in KiCad 9 and removed in 11),
   it is scheduled, and it is tracked in `README.md` and

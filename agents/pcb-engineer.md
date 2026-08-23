@@ -43,6 +43,14 @@ python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
 - **DRC 0** at error severity **with schematic parity**. Parity is not optional:
   a board can be geometrically perfect and wired to a netlist that is not the
   schematic's.
+- **And the gate must say `parity enforced`, not `parity UNENFORCED`.** The flag
+  alone never enforced anything: KiCad ships all five parity checks at *warning*,
+  so `--severity-error` filters them out and the gate prints `parity ok` having
+  checked nothing. A board missing eight parts and mis-wiring twenty-one nets
+  gated green that way. If you see `UNENFORCED`, the fix is in the report's own
+  output (`kicad_scaffold.py DIR --repatch --severity …=error`) and the first
+  thing to do afterwards is **re-run the gate and read the parity count**, which
+  on a stale board is usually your next task list.
 - **0 unconnected.**
 - **Zones filled inside the generator**, headlessly — no GUI pass, ever. If VCC
   or GND read unconnected, suspect the fill and island removal before the routing.
@@ -55,8 +63,21 @@ python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
   group it by owner, and compare it against the previous rev's report:
 
   ```bash
+  make warnings                                  # rotates the previous report
+                                                 # aside, then diffs against it
+  make warnings BASELINE=rev3-drc-all.json       # ...or a named baseline, strict
   python3 scripts/report.py DRC.json --by-owner --baseline rev1-report.json --strict
   ```
+
+  **The baseline is a build artifact, not something to remember.** This check used
+  to have no input: `make warnings` overwrote `drc-all-<target>.json` in place, so
+  by the time you wanted a baseline the previous rev's was gone — and one revision
+  ended up reconstructing the previous class set out of **prose in an as-built
+  document**, which is the "prose that outlived its board" failure below used as a
+  substitute for the data. The template Makefile now rotates the report to
+  `drc-all-<target>.prev.json` before overwriting and diffs against it
+  automatically. Commit one report deliberately for a baseline that survives a
+  clean checkout.
 
   `--by-owner` groups findings by the footprint refs named in their items
   (`pth_inside_courtyard x24  DISP1+MCU1`); `--baseline` reports finding
@@ -95,7 +116,9 @@ Re-read the records.
 ## Rules
 
 - **Never hand-edit the `.kicad_pcb`.** Tracks carry UUIDs, zones carry cached
-  fills, nothing revalidates until KiCad reopens the file.
+  fills, nothing revalidates until KiCad reopens the file. **But see the adoption
+  round trip below** — when someone *else* has hand-edited it, the answer is a
+  defined re-entry path, not a refusal.
 - **No autorouter** unless the prompt explicitly permits one.
 - Load `references/kicad-api.md` (zone filling, island removal by area vs
   connectivity, pad connection mode, project-file severity patching after save,
@@ -109,6 +132,65 @@ Re-read the records.
   file, justified in the project notes, and **above every candidate fab's stated
   minimum**. Never demote a severity to make a violation disappear without saying
   so in the report.
+
+## Adopting hand placements — the re-entry path
+
+"Never hand-edit the board" is right, and it is not a re-entry path. Dragging
+four footprints in pcbnew is the **normal** way a person says *"put the encoder
+over here"* — it is the most likely way a generated board ever gets revised —
+so the generate-only doctrine owes it a procedure rather than a prohibition.
+
+**A hand placement is an `(x, y, rot, layer)` tuple and all four are the spec.**
+Not just position: one part coming back at `rot 180` instead of `rot 0` cost two
+vias, because it reverses which pad of a two-terminal part faces the net that
+has to leave (see `references/electronics.md` §7, nest vs interleave). Two parts
+coming back on the other *face* was a bigger change than every position move
+combined — and it orphaned their ground pads (§10.3).
+
+```bash
+cp board.kicad_pcb board.hand.kicad_pcb          # 1. back the edit up FIRST
+python3 scripts/kicad_geom.py --diff board.rev-N.kicad_pcb board.hand.kicad_pcb \
+        --as-constants                            # 2. extract what moved
+#    ... 3. paste the constants into the emitter, as named constants ...
+make <target>                                     # 4. regenerate: hand routing is
+                                                  #    DISCARDED, placements kept
+python3 scripts/kicad_geom.py --diff board.hand.kicad_pcb board.kicad_pcb --strict
+                                                  # 5. THE CHECK: no differences
+```
+
+Step 5 is the one that makes the whole thing safe and the one nothing else
+performs: **a board generated from the wrong adopted coordinate is perfectly
+clean.** The gate cannot see a transcription error, so verify the regenerated
+placements against the extracted ones to the micron, and say in the report that
+you did. `--diff` also reports `protrudes` **set** changes, which is what tells
+the enclosure phase that a keepout it derived is now stale (see the handoff
+below, and `references/mechanical.md` §4).
+
+Then re-run the whole gate. An adopted placement is a design change like any
+other: it can move a part into a courtyard, break a lane order, or take a pad
+out of its pour.
+
+## Stamp every as-built document you write
+
+An as-built document is correct for exactly one revision of the board, and **no
+gate reads prose.** Measured: a 284-line assembly document, entirely correct for
+one revision, became actively wrong the moment a direct-pin scan became a diode
+matrix — no diodes in its populate list, a stale placement count, a stale drill
+census, and a firmware section listing a `kscan-gpio-direct` map that would have
+been copied straight into a real overlay. Nothing detected it. That is not
+stale-but-harmless; it is the kind of wrong that makes someone solder the wrong
+board.
+
+So every generated as-built document carries a one-line stamp of the board it
+was written from, and `make check` verifies it:
+
+```bash
+python3 scripts/kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb
+python3 scripts/kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb --write
+```
+
+Re-stamping is the one-line act of saying *"I have re-read this against the
+current board"*, which is the only thing that was ever missing.
 
 ## Handoff to the enclosure phase
 

@@ -58,6 +58,23 @@ line.  `kicad_zonefill.py` already does this for you.
 Demote a rule only with a comment saying why the violation is intended — a
 severity override is a design decision on the record, not a way to quiet a
 gate.
+
+SCHEMATIC PARITY IS PROMOTED BY DEFAULT — read this before demoting one.
+
+KiCad 10 ships **every** schematic-parity check at `warning`, and the
+pipeline's own gate invocation is `--severity-error`, so all five are filtered
+out before anything counts them.  The measured consequence: a board missing
+eight parts and mis-wiring twenty-one nets gated green, printing `parity ok`
+(hexpad rev 3; `--severity-all` on the same board reported 31 parity issues).
+That is not a project misconfiguration — it was every hw_forge project, because
+nothing promoted them.
+
+So `PARITY_SEVERITIES` below is written into every scaffolded project as a
+DEFAULT.  Every other default here is a fab capability limit; these five are
+the pipeline's own contract with itself, and the flag alone never enforced it.
+A project that genuinely wants one relaxed demotes it explicitly
+(`--severity net_conflict=warning`), which puts the decision on the record
+where a demotion belongs.
 """
 
 import argparse
@@ -76,6 +93,18 @@ DEFAULT_RULES = {
     "min_through_hole_diameter": 0.3,
     "min_via_diameter": 0.45,
 }
+# The five schematic-parity checks, PROMOTED TO ERROR in every new project.
+# KiCad ships all five at `warning`; `--severity-error` (the gate) then filters
+# them out, so `--schematic-parity` cannot fail a build until these exist.  See
+# the module docstring.  Ordered as KiCad names them.
+PARITY_SEVERITIES = {
+    "missing_footprint": "error",           # a symbol with no footprint placed
+    "extra_footprint": "error",             # a footprint with no symbol
+    "net_conflict": "error",                # a pad wired to a different net
+    "footprint_symbol_mismatch": "error",   # pad set != pin set
+    "lib_footprint_mismatch": "error",      # board copy != library original
+}
+
 DEFAULT_NET_CLASS = {
     "name": "Default",
     "clearance": 0.2,
@@ -261,6 +290,20 @@ def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
                 print("  rule      %s = %s" % (key, value))
             if not sev and not rul:
                 print("  (sidecar holds no severities or design rules)")
+            # A sidecar written before parity was promoted restores a project
+            # whose parity gate cannot fail.  --repatch is the ONLY scaffolder
+            # call a mature generator makes, so this is where that gets seen.
+            stale = sorted(r for r in PARITY_SEVERITIES if sev.get(r) != "error")
+            if stale:
+                print("  note: %d schematic-parity check(s) are not promoted "
+                      "to error in this\n        sidecar (%s).\n        KiCad "
+                      "ships them at `warning`, so --severity-error filters "
+                      "them out and\n        the gate prints `parity ok` "
+                      "unenforceably. fix:\n"
+                      "          python3 %s %s --repatch %s"
+                      % (len(stale), ", ".join(stale),
+                         os.path.basename(__file__), project_dir,
+                         " ".join("--severity %s=error" % r for r in stale)))
     return touched
 
 
@@ -282,7 +325,13 @@ def project_doc(name, rules, net_class, severities):
 def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
              sym_libs=None, fp_libs=None, quiet=False):
     os.makedirs(project_dir, exist_ok=True)
-    severities = dict(severities or {})
+    # Parity promotions FIRST, so a project's own flags can still demote one
+    # deliberately — the override is the record of that decision.
+    merged_sev = dict(PARITY_SEVERITIES)
+    merged_sev.update(severities or {})
+    demoted = sorted(r for r, level in merged_sev.items()
+                     if r in PARITY_SEVERITIES and level != "error")
+    severities = merged_sev
     merged_rules = dict(DEFAULT_RULES)
     merged_rules.update(rules or {})
     merged_net = dict(DEFAULT_NET_CLASS)
@@ -323,8 +372,20 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
                                            len(severities)))
         if severities:
             for rule, level in sorted(severities.items()):
-                print("  severity  %s -> %s" % (rule, level))
+                print("  severity  %s -> %s%s"
+                      % (rule, level,
+                         "   (hw_forge parity default)"
+                         if rule in PARITY_SEVERITIES and level == "error"
+                         else ""))
             print("  remember: re-run with --repatch after pcbnew.SaveBoard()")
+        if demoted:
+            # Loud, because it un-gates the check most likely to catch a
+            # generated board drifting from its own schematic.
+            print("  WARNING: %d schematic-parity check(s) DEMOTED below error "
+                  "(%s).\n           `--schematic-parity` can no longer fail "
+                  "the gate for these.\n           Record why, next to the "
+                  "flag that demoted them." % (len(demoted),
+                                               ", ".join(demoted)))
     return pro_path
 
 

@@ -27,6 +27,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -267,6 +268,7 @@ def check_project(rep, project_dir, cli):
     for directory, name in kicad_dirs:
         check_lib_tables(rep, directory, name)
 
+    check_models(rep, project_dir, kicad_dirs)
     check_generators(rep, project_dir)
     check_case_env(rep, project_dir)
     return kicad_dirs
@@ -303,6 +305,130 @@ def check_lib_tables(rep, directory, name):
                  % (directory, name))
     else:
         rep.ok(label, "%d library URI(s) resolve" % total)
+
+
+# A footprint's 3D model link.  KiCad writes `(model "path" ...)`; the path may
+# be quoted or bare and may be anchored on a path variable.
+_MODEL_LINK = re.compile(r'\(model\s+"?([^"\n\)]+?)"?\s*(?:\(|$)',
+                         re.MULTILINE)
+# The 3D-model path variables KiCad itself defines.  They are USER-GLOBAL,
+# which is exactly what a portable repo cannot rely on, so they are resolved
+# here against the discovered install rather than the user's KiCad config.
+_MODEL_VARS = ("KICAD10_3DMODEL_DIR", "KICAD9_3DMODEL_DIR",
+               "KICAD8_3DMODEL_DIR", "KICAD_3DMODEL_DIR")
+
+
+def model_roots():
+    """Candidate directories the KiCad 3D-model path variables resolve to."""
+    roots = []
+    for var in _MODEL_VARS:
+        if os.environ.get(var):
+            roots.append(os.environ[var])
+    root = os.environ.get("KICAD_ROOT")
+    bases = [root] if root else []
+    bases += ["/Applications/KiCad/KiCad.app/Contents", "/usr", "/usr/local"]
+    for base in bases:
+        for rel in (os.path.join("SharedSupport", "3dmodels"),
+                    os.path.join("share", "kicad", "3dmodels")):
+            path = os.path.join(base, rel)
+            if os.path.isdir(path):
+                roots.append(path)
+    return roots
+
+
+def resolve_model(link, footprint_path, project_dir):
+    """An absolute path for one `(model ...)` link, or None if unresolvable.
+
+    `${KIPRJMOD}` is resolved against the directory holding the footprint
+    LIBRARY, not the board project: a shared library serving two board variants
+    at different depths resolves differently for each, which is a real trap and
+    not this checker's to fix (it is reported, below, as ambiguous).
+    """
+    path = link.strip().replace("\\", "/")
+    for var in _MODEL_VARS:
+        for form in ("${%s}" % var, "$(%s)" % var):
+            if form in path:
+                for root in model_roots():
+                    candidate = path.replace(form, root)
+                    if os.path.exists(candidate):
+                        return candidate
+                return None
+    lib_dir = os.path.dirname(os.path.dirname(os.path.abspath(footprint_path)))
+    for anchor in ("${KIPRJMOD}", "$(KIPRJMOD)"):
+        if anchor in path:
+            for base in (lib_dir, os.path.abspath(project_dir)):
+                candidate = os.path.normpath(path.replace(anchor, base))
+                if os.path.exists(candidate):
+                    return candidate
+            return None
+    if "${" in path or "$(" in path:
+        return None                          # some other global variable
+    if os.path.isabs(path):
+        return path if os.path.exists(path) else None
+    candidate = os.path.normpath(os.path.join(lib_dir, path))
+    return candidate if os.path.exists(candidate) else None
+
+
+def check_models(rep, project_dir, kicad_dirs=None):
+    """Every `(model ...)` a project's own footprints name must resolve.
+
+    A footprint NAMING a model is not evidence that the model exists.  Measured:
+    a provenance table recorded a stock model as `verified-in-cad` — "file
+    exists, path confirmed by direct filesystem check" — for a path that exists
+    in **no** KiCad install; the check had read the footprint's own `(model ...)`
+    line and recorded the *reference* as the *referent*.  That is a "the model
+    is fine" claim which becomes an empty 3D view at the exact moment (a case
+    phase, a stack-up review) the model was supposed to do work.
+
+    So the evidence for a model row is a `stat` of the RESOLVED path, and this
+    is the generic version of it: resolve every link in the project's own
+    library and name the ones that are not there.  It also reports footprints
+    with no model link at all, which is the machine-checkable half of an
+    "every footprint links a 3D model" requirement.
+    """
+    pretty = sorted(glob.glob(os.path.join(project_dir, "**", "*.pretty"),
+                              recursive=True))
+    mods = [p for d in pretty
+            for p in sorted(glob.glob(os.path.join(d, "*.kicad_mod")))]
+    if not mods:
+        return
+    missing, links, no_link = [], 0, []
+    for path in mods:
+        try:
+            with open(path, errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        found = _MODEL_LINK.findall(text)
+        if not found:
+            no_link.append(os.path.basename(path)[:-len(".kicad_mod")])
+            continue
+        for link in found:
+            links += 1
+            if resolve_model(link, path, project_dir) is None:
+                missing.append("%s -> %s"
+                               % (os.path.basename(path)[:-len(".kicad_mod")],
+                                  link.strip()))
+    label = "3d models"
+    if missing:
+        rep.fail(label, "%d of %d model link(s) do not resolve: %s"
+                 % (len(missing), links, "; ".join(missing[:3])
+                    + (" ..." if len(missing) > 3 else "")),
+                 "fix: vendor the model, or correct the (model ...) path in "
+                 "the footprint.\n     A footprint naming a model is not "
+                 "evidence that the model exists —\n     the evidence is a "
+                 "stat of the resolved path, which is this check.")
+    elif links:
+        rep.ok(label, "%d model link(s) in %d footprint(s) resolve"
+               % (links, len(mods) - len(no_link)))
+    if no_link:
+        rep.warn(label + " (unlinked)",
+                 "%d footprint(s) link no 3D model: %s"
+                 % (len(no_link), ", ".join(no_link[:6])
+                    + (" ..." if len(no_link) > 6 else "")),
+                 "fix: only a defect if this project requires a model per "
+                 "footprint (a case\n     phase does). A STAND-IN must be "
+                 "STEP, not WRL — see references/mechanical.md §7.")
 
 
 def check_generators(rep, project_dir):

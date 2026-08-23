@@ -1,6 +1,6 @@
 {
   "name": "hw-forge",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Gated, agent-orchestrated hardware design pipeline: code-generated KiCad + code-CAD enclosures, machine-checked exit gates, and a compounding knowledge base.",
   "author": {
     "name": "calebbarzee"

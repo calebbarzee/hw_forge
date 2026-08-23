@@ -78,15 +78,20 @@ edits below: they were made against two boards, not one.
 
 ## 2. Gap statistics
 
-60 gaps, one global sequence (the log's own numbering collision is gap 49 — see
-below; the rev-2 entries appended to the same sequence, which is that fix
-working). Per-gap dispositions are inline in `hexpad/GAPS.md`.
+94 gaps, one global sequence (the log's own numbering collision is gap 49 — see
+below; the rev-2 and rev-3 entries both appended to the same sequence, which is
+that fix working twice). Per-gap dispositions are inline in `hexpad/GAPS.md`.
 
 | Bucket | Count | Meaning |
 |---|---|---|
-| **FIXED** | 55 | folded into hw_forge, with the landing file named (44 in round 1, 11 in round 2) |
+| **FIXED** | 89 | folded into hw_forge, with the landing file named (44 in round 1, 11 in round 2, 34 in round 3) |
 | **BACKLOG** | 4 | real, not bounded today — `docs/BACKLOG.md` (gaps 3, 6, 11, 19) |
 | **WONTFIX** | 1 | works as intended (gap 9) |
+
+Four of round 3's 34 (#77, #79, #81, #83) count as FIXED because the doctrine
+landed, and each left a **script** remainder in `docs/BACKLOG.md` (B5, B6). That
+split is deliberate and worth keeping as a category: the rule that stops the bug
+recurring is written; the tool that would catch it unaided is not.
 
 By phase, which is the more interesting cut:
 
@@ -98,6 +103,7 @@ By phase, which is the more interesting cut:
 | 5 — fab | 10 | mostly **what the export cannot assert**: per-side split (31), empty layers (32), provenance (36), plus one verified bug (37) |
 | 6 — enclosure | 9 | two outright bugs (41, 42), the rest reference rules with no reading for the case in hand |
 | 4/6 rev 2 — revision | 11 | a different character again: two **regression contracts** the pipeline lacked (53, 60), two reference numbers that were simply wrong (56, 58), and the coordinate-frame self-check nothing named (55) |
+| 1–6 rev 3 / 3.1 — re-spec | 34 | the character changes once more: one **gate that was decorative** (66), a family of 3D-model gaps that only appear when a case has to consume the board (67–72), an **adoption round trip** the generate-only doctrine had no path for (79–81), and eight case-phase rules with no reading for the case in hand (86–94) |
 
 Two facts worth stating plainly:
 
@@ -337,6 +343,139 @@ target), six into references and agent files. And two round-1 gaps closed
 now derived from `protrudes` (29 refs, where rev 1 hand-enumerated the same list
 under 20 lines of comment explaining why the footprint's `side` lies), and the
 courtyard-versus-body assertion is what sized rev 2's 43.85 mm display window.
+
+---
+
+## 4b. Addendum — rev 3 / 3.1: a re-spec, a decorative gate, and a hand edit
+
+The user revised the spec again after reviewing rev 2, and this round is
+materially different from the last two: not a build, and not a geometric
+revision, but a **change of requirements** followed by **a person opening
+pcbnew and dragging four parts.** Direct-pin scan became a COL2ROW diode matrix,
+a rotary encoder was added, every footprint had to link a 3D model, the display
+header moved west of the MCU pins, and the mounting holes were constrained to
+the four board corners. Then rev 3.1 adopted hand placements — two of them onto
+the other board face.
+
+**34 more gaps (#61–94), all 34 addressed.** All gates green again on both
+variants, the case suite at **416 checks, all passing**. What the round bought,
+in order of value:
+
+### The gate was decorative, and had been in both fixtures all along
+
+The single most valuable finding of the whole dry run, and it is a *process*
+finding rather than a design one. `--schematic-parity` was in the gate script, in
+`references/kicad-api.md`, in `references/electronics.md` §10.2, in `SKILL.md`'s
+phase-4 exit contract, and in `kicad_gate.py`'s own docstring — which stated, in
+so many words, that the flag "is not optional: without it the DRC passes on a
+board whose netlist has drifted from the schematic". Five places agreed. And the
+check could not fail a build, because **KiCad ships all five parity checks at
+`warning` severity and the gate filters on `--severity-error`.**
+
+Measured mid-revision, with a rev-3 schematic and the rev-2 board still on disk:
+
+```
+kicad_gate.py kicad          ->  ERC ok   DRC ok   parity ok   unconnected ok   (exit 0)
+same board, --severity-all   ->  31 schematic parity issues
+                                 21 net_conflict, 8 missing_footprint, 2 footprint_symbol_mismatch
+```
+
+A green gate on a board missing eight parts and mis-wiring twenty-one nets.
+
+The fix is three-layered, because one layer would not have been enough:
+`kicad_scaffold.py` writes the five promotions as **defaults** (they are the
+pipeline's contract with itself, not a fab capability limit); `kicad_gate.py`
+**asserts the promotion before trusting a parity pass**, printing `parity
+enforced at error severity (5/5)` or `parity UNENFORCED …` with the fix command,
+and failing under `--strict-parity`; and the references stop implying the flag is
+sufficient. A project that wants one relaxed demotes it explicitly and gets a
+loud warning for doing so.
+
+**Then the older fixture was audited, and the finding got worse.** z_board shares
+the scaffolder, and every one of its four boards had all five parity rules
+explicitly at `warning`, no overrides sidecar anywhere in the repo, and committed
+`drc.json` artifacts recording `"included_severities": ["error"]` beside
+`"schematic_parity": []` — the section was structurally unreachable. Re-run at
+promoted severity: left, right and combo pass; **proto fails with two
+`missing_footprint`.** A decoupling cap and an LED current-limit resistor are in
+that slice's schematic and were never placed on its board. The gate had reported
+it clean for its entire life.
+
+The durable lesson generalises past KiCad: **a check whose severity is below the
+severity you filter on is not a check.** Any gate built on a filtered report owes
+an assertion that the thing it claims to check is inside the filter.
+
+### The hand edit is a first-class workflow, not a mistake
+
+`gen_pcb.py`'s docstring says, correctly and in capitals, never to hand-edit the
+`.kicad_pcb`. The whole pipeline rests on that. But the user did — dragged four
+footprints and tried to re-route — and **that is not a mistake, it is the normal
+way a person expresses "put the encoder over here."** A generate-only doctrine
+with no defined re-entry path just means the re-entry gets improvised.
+
+So it is defined now (`agents/pcb-engineer.md`), and the tooling supports it:
+`kicad_geom.py --diff OLD NEW` reports per-ref Δx/Δy/Δrot/**Δside**,
+`--as-constants` prints the moved set as a pasteable dict, and `--strict` exits
+nonzero on any difference. The procedure is back up → extract → adopt →
+regenerate (discarding the hand routing) → **`--diff --strict` the backup against
+the regenerated board.** That last step is the one that makes the whole thing
+safe, because a board generated from the wrong adopted coordinate is perfectly
+clean and no gate can see the transcription error.
+
+Two facts had to be stated that nothing had stated: **a hand placement is an
+`(x, y, rot, layer)` tuple and all four are the spec** (a part returning at
+`rot 180` cost two vias by reversing which pad faced its departing net; two parts
+returning on the other *face* orphaned their ground pads and needed stitch vias),
+and **a keepout derived from a component bound is invalidated by that component
+leaving.** The protrude-below set went 37 → 35 refs, those two were the parts
+bounding the battery bay, the bay grew ~68 % in plan area, and every remaining
+assertion stayed green. A stale ledger that is merely *conservative* is the
+failure mode nobody looks for.
+
+### Prose outlived its board, and the regression-note convention
+
+Two gaps here share one shape: the pipeline gates *artifacts* and nothing gates
+*claims*. A 284-line as-built assembly document, entirely correct for rev 2,
+became actively wrong the instant the scan matrix changed — no diodes in its
+populate list, a stale drill census, and a firmware section whose
+`kscan-gpio-direct` map would have been copied straight into a real overlay. It
+was caught by someone happening to read it for an unrelated number. Now
+`kicad_digest.py --stamp DOC BOARD` verifies a `board-digest:` line against the
+board's canonical digest, and re-stamping is the explicit act of saying "I have
+re-read this."
+
+The other is the **REGRESSION note**, a third outcome beside BARRIER and the
+deviation report. Two locked decisions were each satisfiable and jointly cost a
+property the *previous* revision had won: the display body came back over the
+USB-C receptacle in plan, reintroducing a z clearance rev 2 had eliminated. No
+gate objected, nothing was bent, and there was no channel for "this got worse in
+a way nobody chose" except prose in a final report. The note names what was lost,
+which decisions' interaction lost it, the number, and what it would cost to get
+back — and the orchestrator must write it into `SPEC.md` and amend the KB card
+that recorded the win.
+
+### Round-3 score
+
+34 gaps, 34 addressed. Eight landed in scripts — parity promotion
+(`kicad_scaffold.py`), parity assertion (`kicad_gate.py`), obstacle rects /
+designator parsing / the placement diff (`kicad_geom.py`), suite-name
+normalisation, winner-free check identities and `interferes()` /`gap()`
+(`case_verify.py`), the `process change` finding (`kicad_fab.py`), document
+stamping (`kicad_digest.py`), model-link resolution (`preflight.py`), and the
+rotating warnings baseline (`templates/Makefile`). The rest landed in references,
+agent role docs and the KB conventions. Four left a script remainder in
+`docs/BACKLOG.md` (B5: a zone-flooding pour checker wanted by three separate
+gaps; B6: writing adopted placements back into a generator).
+
+**Three earlier gaps closed and paid off inside this round**, which is now a
+pattern rather than a coincidence: `protrudes` (#25/#41) made the underside
+ledger derived, and rev 3.1 proved a derived ledger still needs a *set* diff
+(#84); the courtyard-vs-body assertion (#45) sized rev 2's display window, and
+rev 3 found the opposite failure where a pad row inflates a courtyard (#75); and
+the revision regression contract (#53/#60) turned out to need three separate
+mechanisms, one of which (#86) was quietly broken by the obvious suite-naming
+convention until this round measured it — `416 added, 239 retired` where the
+true answer was `233 added, 59 retired`.
 
 ---
 

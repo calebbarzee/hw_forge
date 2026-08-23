@@ -192,9 +192,18 @@ the skeleton, the gate runner, and the accumulated traps.
 
 ## Status and roadmap
 
-**v0.2 — the dry run is DONE.** The scripts, templates, references and knowledge
-cards are extracted from z_board, and they have now been used to build something
-they were not written from.
+**v0.3 — the dry run is DONE, and has been re-specced twice.** The scripts,
+templates, references and knowledge cards are extracted from z_board, and they
+have now been used to build something they were not written from — then to revise
+it and re-spec it, which is where the pipeline's most serious gap turned out to
+be hiding.
+
+> **v0.3 changes behaviour for new projects.** `kicad_scaffold.py` now promotes
+> the five KiCad schematic-parity checks to `error` in every project it
+> scaffolds, and `kicad_gate.py` reports `parity UNENFORCED` (or fails, under
+> `--strict-parity`) on a project whose `.kicad_pro` does not carry them. Every
+> project scaffolded before this — z_board's four boards included — was gating
+> `parity ok` on a check that could not fail. See below.
 
 **The dry run** was the milestone: a 6-key macro pad with a nice!view display on
 a nice!nano — **hexpad** — designed end to end using nothing but this skill.
@@ -209,21 +218,42 @@ rotated 90°, the board shrunk, the case rebuilt — which tested something a fr
 build does not: whether a *change* can be trusted. Gates green again, 239
 enclosure checks.
 
-Together they produced **60 logged gaps** — every rediscovery, missing
-statement, script shortfall and unclear instruction — of which **55 are fixed in
-this version**, 4 are deferred with reasons in
-[`docs/BACKLOG.md`](docs/BACKLOG.md), and 1 is works-as-intended. The highest-value catches: a footprint courtyard can
-be *smaller* than the part it holds (a silent interference every clearance check
-passes); the fab exporter could delete its own profile and still print `ok`; and
-"no source anywhere has this number" needed to become a real, documented research
-outcome instead of a dead end. From the revision: a rotation-sign error in a
-handoff table that only an *asymmetric* feature could reveal, and a fastening
-rule that turned out to be unsatisfiable at one hole and to resolve differently
-on each of the two shells. The revision also added what a revision needs and a
-build does not — **regression contracts**: a rev now diffs its DRC finding
-classes and its enclosure check *set* against the previous rev, so a new warning
-class or a quietly retired check cannot pass in silence. The full verdict is
-[`docs/DRYRUN-HEXPAD.md`](docs/DRYRUN-HEXPAD.md).
+Then it was **re-specced**: a diode matrix replacing direct-pin scan, a rotary
+encoder added, a 3D model required per footprint, and — the part no doctrine
+covered — a person opening pcbnew and **dragging four parts**, two of them onto
+the other board face. Gates green again, 416 enclosure checks.
+
+Together the three rounds produced **94 logged gaps** — every rediscovery,
+missing statement, script shortfall and unclear instruction — of which **89 are
+fixed**, 4 are deferred with reasons in [`docs/BACKLOG.md`](docs/BACKLOG.md), and
+1 is works-as-intended. Not one gap was a design failure; every one was friction,
+a missing statement, or a tool that could not express something true.
+
+The highest-value catch, from the re-spec, is a process failure rather than a
+design one: **the schematic-parity gate was decorative.** `--schematic-parity`
+was in the gate script, in two references, in the skill's phase-4 exit contract
+and in the script's own emphatic docstring — and it could not fail a build,
+because KiCad ships all five parity checks at `warning` severity and the gate
+filters on `--severity-error`. Measured: a green gate on a board missing eight
+parts and mis-wiring twenty-one nets. Auditing the *original* fixture for the
+same blind spot found it on all four z_board boards, and found two genuinely
+missing components on its proto slice that a green gate had hidden for the life
+of that slice. The general form is worth more than the fix: **a check whose
+severity is below the severity you filter on is not a check.**
+
+Others: a footprint courtyard can be *smaller* than the part it holds (a silent
+interference every clearance check passes) — and, from the re-spec, *larger*, when
+a through-hole part's own pad row inflates it and a deck window sized on the union
+costs a mounting boss its seat; the fab exporter could delete its own profile and
+still print `ok`; "no source anywhere has this number" needed to be a real,
+documented research outcome; a rotation-sign error in a handoff table that only an
+*asymmetric* feature could reveal. The revisions also added what a revision needs
+and a build does not — **regression contracts**: a rev diffs its DRC finding
+classes and its enclosure check *set* against the previous rev (with the baseline
+now a build artifact rather than something to remember), a generated as-built
+document carries a digest stamp of the board it describes, and a hand-edited board
+has a defined adoption path ending in a to-the-micron placement diff. The full
+verdict is [`docs/DRYRUN-HEXPAD.md`](docs/DRYRUN-HEXPAD.md).
 
 Next: plugin packaging (including making the slash commands reachable from a
 project the plugin is not installed into), then the migration off the SWIG

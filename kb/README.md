@@ -72,6 +72,18 @@ narrower than its own phrasing causes **under**-searching, which is the exact op
 what the recall convention exists to buy. Write the scope so the negative can be re-tested,
 or invalidated, without redoing the whole search.
 
+### Connector cards — `mating_direction` is a required field
+
+A connector's section **must** state `mating_direction: +z | -z | +x | …` in
+**footprint-local axes**, with the two-source rule applied to it like any other
+pin fact. Which way the cable leaves is in no machine-readable place — not in
+the footprint (a name containing `Vertical` is a convention, not data), not in
+`pads_bbox` or `fab_items`, and `kicad_geom` reports `protrudes: ["top"]` for a
+connector whose *cable* is the tall thing. Yet a whole chain of case consequence
+hangs on it: one vertical top-entry receptacle changing board faces between
+revisions turned a one-line note ("the lead points down into the bay") into a
+~40 mm routed channel and a locally thickened wall (`mechanical.md` §6a).
+
 ### Pin-role facts — port first, label derived
 
 State every pin-role fact in **port** terms first (`P0.09`, `P1.13`) and derive the
@@ -116,6 +128,39 @@ At the **end of every run**, harvest:
    so it is not relitigated.
 6. Corrections beat additions: if a run proves an existing card wrong, fix the card in
    place and note the correction and its date in the body.
+7. **A card that records a design WIN must be amended by the revision that gives it up.**
+   Not just reported in that revision's own output — amended, in the card, where the next
+   project will read it. A win recorded as advice ("place the display *beside* the
+   connector, not over it") is read by later runs as a rule; a later revision that
+   reintroduces the clearance problem the win eliminated has to say so in the card, or
+   the card silently lies to everyone downstream. State what was given up, which locked
+   decisions cost it, and the number. (Live instance: `nice-view-display.md` §2a records
+   exactly that win, and a later revision quietly contradicted it — see the REGRESSION
+   note convention in `skills/hw-design/SKILL.md`.)
+
+## Concurrent edits to one card
+
+A card that several phases touch in one run needs a rule, or every editor has to read the
+whole file to find out what it is allowed to invalidate. One card reached four
+phases/runs of edits — two research passes, a verification harvest, a re-scoping — none
+of them the same agent, and the last one had to read ~200 lines to discover that its own
+correction was about to invalidate an existing section's numbers. That worked only
+because it happened to read carefully; nothing *required* a full read.
+
+The convention, in order of preference:
+
+1. **One writer per card per phase.** The orchestrator assigns it; two agents in the
+   same phase do not both edit one card. Where two phases genuinely both have something
+   to add, they hand their additions to the orchestrator, which merges.
+2. **Stamp section ownership** where a card is long-lived: `§2a (phase 6, 2026-08-23)`.
+   A later editor can then tell what it may silently update from what it must flag.
+3. **Split the card once it crosses ~150 lines or three contributing phases.** Keeping a
+   card small enough that a full read is cheap is the real fix; the stamps are the
+   mitigation until then.
+
+And the rule that holds regardless: **a number you are superseding gets an explicit
+"superseded by §X" note in place, never a silent deletion and never fresh numbers left
+sitting next to stale ones.**
 
 **Trigger rule: an UNSURE in a project doc is a harvest trigger.** Anything a project doc
 marks UNSURE, or records as an open risk or a deferred decision, gets harvested **at the

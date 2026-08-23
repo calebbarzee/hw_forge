@@ -1,7 +1,7 @@
 ---
 domain: keyboards/display
-tags: [nice-view, sharp-memory-lcd, ls011b7dh03, spi, spi0, display, nice-nano, zmk-display, macro-pad, hexpad, dry-run, mounting, stack-height, mechanical, enclosure, display-bay, usb-c-clearance]
-source: hexpad resource-scout run, 2026-08-22 — nicekeyboards.com/docs/nice-view, zmkfirmware/zmk (app/boards/shields/nice_view*), ceoloide/ergogen-footprints (commit 48935f54), HookyQR/nice_view_pcb (commit f09725d5), this machine's nice-nano-v2.md and zmk-electrical.md cards; follow-up run, 2026-08-22 — Nice-Keyboards/nicekeyboards.com raw mdx source, typeractive.xyz (nice-view product page + no-solder-spring-headers), github.com/joric/nrfmicro wiki; hexpad phase-6 case run (case/hexpad_case.py, 239-check verify() pass (board rev 2)) — see 2a; hexpad phase-7 harvest (§3.6 re-scoped)
+tags: [nice-view, sharp-memory-lcd, ls011b7dh03, spi, spi0, display, nice-nano, zmk-display, macro-pad, hexpad, dry-run, mounting, stack-height, mechanical, enclosure, display-bay, usb-c-clearance, header-offset, rev-3, rev-3.1, 3d-model, no-model-found, regression-note]
+source: hexpad resource-scout run, 2026-08-22 — nicekeyboards.com/docs/nice-view, zmkfirmware/zmk (app/boards/shields/nice_view*), ceoloide/ergogen-footprints (commit 48935f54), HookyQR/nice_view_pcb (commit f09725d5), this machine's nice-nano-v2.md and zmk-electrical.md cards; follow-up run, 2026-08-22 — Nice-Keyboards/nicekeyboards.com raw mdx source, typeractive.xyz (nice-view product page + no-solder-spring-headers), github.com/joric/nrfmicro wiki; hexpad phase-6 case run (case/hexpad_case.py, 239-check verify() pass (board rev 2)) — see 2a; hexpad phase-7 harvest (§3.6 re-scoped); rev-3 research pass, 2026-08-23 — re-confirmed no Nice-Keyboards hardware/mechanical repo exists, re-applied the existing two-source header offset to the corrected L4 geometry, confirmed no STEP/WRL model exists for nice!view (only an unusable Printables STL); hexpad rev-3.1 phase-6 case run, 2026-08-23 (case/hexpad_case.py, 416-check verify() pass against board rev 3.1) — see 2a-R, which REGRESSES 2a's display-beside-the-connector win
 date: 2026-08-23
 confidence: researched
 ---
@@ -125,7 +125,102 @@ fully researched rather than merely "not found"):**
     resolution is project-specific, not a general nice!view fact, so it is not stated as
     settled for every board using this display.
 
-## 2a. The enclosure consequence, worked (hexpad phase 6, `verify()`-passing)
+## 1b. Rev-3 correction: header-to-body offset for a west-of-MCU mount (hexpad L4)
+
+**hexpad's SPEC.md L4 was corrected by the user in rev 3.** The header does not sit inside
+the nice!nano's pad corridor (rev 1/2's assumption, which §2a below was written against);
+it sits **west of the nice!nano's pin rows, outside the MCU socket entirely**, with the
+display body then resting on top of the module, extending east over it. This card already
+had the fact needed to place it correctly — it just hadn't been asked for in these terms
+yet.
+
+**Header-to-body offset, in display-local coordinates** (origin at the display PCB's own
+centre, module 36mm long × 14mm wide): the 5-pin header sits on the centreline (x = 0,
+spanning the full 14mm width is irrelevant here — the header row is short and centred in
+x), at **y ≈ +16.5 to +16.7mm**, i.e. **~1.3mm in from one short edge**. The body's other
+36 − 1.3 ≈ **34.7mm extends away from the header** in the −y direction. This was already
+two-source verified in §"Mechanical" above (ceoloide `display_nice_view.js`: header at
+local y=16.7 within a ±18mm outline, 1.3mm from the near edge; HookyQR's footprint: header
+at y=16.51 within a 17.78/−18.22mm outline, 1.27mm from the near edge — the two agree to
+0.03mm). **Nothing new was found from a nicekeyboards-owned hardware/mechanical repo** —
+confirmed (again, for this pass) that `Nice-Keyboards`'s GitHub org has no PCB-design or
+mechanical-drawing repo for nice!view (only `nicekeyboards.com` the website, `nice60-zmk-config`,
+and `nice-keyboards-docs`, none of which carry nice!view hardware source). The two vendored
+community footprints remain the best two sources for this fact.
+
+**What this means for placement**: put the header socket west of (outside) the nice!nano's
+pad columns — do not try to route it through the 15.24mm inter-column corridor. Then the
+display body, whose long axis runs away from the header by ~34.7mm, extends *east*, laid
+so its far end lands over the nice!nano's own pad footprint — "the glass lands centered
+over the module" is achieved by choosing the header's exact (x,y) west-of-the-MCU so that
+the body's 34.7mm extent, minus the ~1.3mm header margin already spent at the near end,
+centers the remaining ~33.4mm of body length over the nice!nano's own ~33mm outline
+(`nice-nano-v2.md`: nice!nano v2 is 33.0 × 17.78mm) — a coincidence of scale worth noting:
+the display body (minus its header margin) and the nice!nano module are almost the same
+length, which is presumably *why* this stacking convention exists at all.
+
+**3D model**: none was found for the nice!view module itself, in any format usable by
+KiCad. The only hit was a Printables **STL** ("nice!view OLED" by spamwax) — STL is a mesh
+format KiCad's 3D viewer does not consume as a footprint-linked model (KiCad wants STEP or
+WRL) and it was not vendored for that reason, not for a license reason. **No STEP/WRL exists
+that this run could find.** Per L11's own fallback allowance, use a **placeholder box**
+sized to the verified envelope: 36 × 14 × 2.9mm body, positioned per the header offset
+above, seated at whatever mounting-standoff height the case phase's named parameter
+resolves to (§"Mounting stack height," 7.0mm nominal). This is an honest placeholder, not a
+found model — say so wherever it's linked.
+
+**This invalidates the specific numbers in §2a below** (the 18.88×36.85mm window, the
+7.00mm/0.25mm setback figures) — those were computed for the rev-1/2 "header in the pad
+corridor, display centred lengthwise over the MCU" geometry. The *method* in §2a (union of
+plan envelopes, display-underside-vs-USB-shell as the load-bearing check, stack height as a
+named parameter) still applies; only the specific coordinates need re-deriving against the
+corrected header offset above. **Not re-derived in this pass** — that is case-phase work,
+not resource-scout's, and is flagged in `hexpad/GAPS.md`.
+
+## 2a-R. REGRESSION NOTE — hexpad rev 3/3.1 gave the §2a win back, by locked-decision collision
+
+**Convention**: `hexpad/GAPS.md` #78 asks that when a card records a design *win*
+and a later revision gives it up, the card is amended rather than the loss living
+only in that revision's report. This is that amendment. Read it before §2a's "the
+layout that removes the clearance entirely", which is still correct advice and was
+still overridden.
+
+| | |
+|---|---|
+| **Property lost** | the display sitting *beside* the USB-C receptacle, which converted a knife-edge **z** clearance into a **plan** check that no header height can fail (§2a's closing recommendation, and rev 2's measured 7.00 mm set-back). |
+| **Decisions that collided** | **L4** (rev 3, user-corrected): the 5-pin header sits *west* of the nice!nano's pin rows, outside the socket, body cantilevering east. **L10**: an EC11 encoder in the same north strip. Each satisfiable alone; jointly they are not — a header 1.3 mm from the body's west short edge with 34.7 mm of body east of it cannot both start west of the pin rows and stop west of a 7.35 mm-deep receptacle, and pulling it far enough west takes the whole strip the encoder needs. |
+| **The number** | display body east end **x 52.225** on a board whose east edge is 51.625: the glass covers the receptacle (x 44.875…52.225) entirely in plan and hangs **0.600 mm** past the board edge, *exactly* flush with the USB-C shell's outer face. So display-underside-vs-shell-top is load-bearing again: **+0.70 mm** at the 7.00 mm default, **0.00 mm — touching** at the 6.30 mm band floor, +2.20 at 8.50. Identical to rev 1's numbers. The honest usable band is **6.60–8.50** for a 0.30 keepout. |
+| **What would get it back** | only L4 moving. `DISP_HX ≤ 10.175` clears the receptacle and puts the header ~11 mm west of the pin rows — which is the encoder's strip. So: give up the encoder, or accept a z clearance that goes to zero on the low cited header height. |
+
+**What this means for a reader of §2a.** The set-back rule
+(`display_setback > receptacle_depth − shell_overhang`) is still right and still
+the thing to design for on a *new* board. What rev 3 proves is that it is only
+available if nothing else claims the strip on the other side of the module — so
+**check the set-back against the rest of the north-strip budget before treating it
+as free.** §2a calls the cost "nothing"; on a board with an encoder it is the
+encoder.
+
+Three consequences that appear only in the over-the-receptacle arrangement, all
+measured on hexpad rev 3.1:
+
+- **The case cannot help.** The deck is an open window, so nothing the enclosure
+  does changes a board-part-to-board-part clearance. The case's whole contribution
+  is to *assert* the number at the band floor, the default and the ceiling, so a
+  wrong header fails a check instead of failing at assembly.
+- **A plug's overmold butts against the shell's outer face at x 52.225 — exactly
+  where the glass ends.** Zero plan overlap and zero margin: the plug's moulding
+  sits flush against the display's edge. It inserts; it looks like an
+  interference and is not. Worth asserting at 0.000 mm rather than eyeballing.
+- **The enclosure's east wall needs no notch for the cantilever.** With a 5.00 mm
+  plate top the glass at 7.00 mm flies over the wall with 2.00 mm to spare (1.30
+  at the band floor) — so the third feature on that wall is an *assertion*, not an
+  opening. It does overhang 0.300 mm of the wall's footprint in plan, and stops
+  2.200 mm inside the case's outer face, so a knock lands on plastic.
+
+Worked, `verify()`-passing at 416 checks: `hexpad/case/hexpad_case.py`
+(`display_stack_h`, `display_band`, `display_band_safe`).
+
+## 2a. The enclosure consequence, worked (hexpad phase 6, `verify()`-passing) — rev-2 geometry, superseded by §1b above and REGRESSED by §2a-R
 
 The stack height stays unresolved as a *number*, but its consequences are now fully
 quantified, and the important finding is that **the case does not care and the board

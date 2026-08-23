@@ -75,6 +75,30 @@ belongs to; a rule tagged for the other phase does not apply to this run.
   never a surprise at order time.
 - Decide the commit/ignore convention for fab outputs **before the first export**
   (above), not at cleanup time.
+- **A paste layer that crossed between empty and non-empty is a PROCESS CHANGE**,
+  not a count to edit: a stencil and a reflow pass were added or removed. The
+  exporter prints it as its own finding, last, with the per-side placement split
+  beside it. Report it as the headline fact it is, put the new pass count in the
+  assembly notes, and *acknowledge* it in the profile (`became_populated`) rather
+  than deleting the assertion.
+- **STAMP EVERY AS-BUILT DOCUMENT YOU WRITE** with the digest of the board it
+  describes, and verify it from `make check`:
+
+  ```bash
+  python3 scripts/kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb          # verify
+  python3 scripts/kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb --write  # re-stamp
+  ```
+
+  An as-built document is correct for **exactly one** revision of the board, and
+  no gate reads prose. Measured: a 284-line assembly document, entirely correct
+  for one revision, became actively wrong the moment a direct-pin scan became a
+  diode matrix — no diodes in its populate list, a stale placement count, a stale
+  drill census, and a firmware section whose `kscan-gpio-direct` map would have
+  been copied straight into a real overlay. Nothing detected it; someone happened
+  to read the file for an unrelated number. Re-stamping is the one-line act of
+  saying "I have re-read this against the current board", which is the only thing
+  that was ever missing — so **never re-stamp without re-reading.** That turns the
+  check into a formality, which is worse than not having it.
 
 **Phase 7 (docs, hygiene, harvest):**
 

@@ -9,9 +9,17 @@ already ran.
 
 It has since run **forwards** as well as backwards: the hexpad dry run
 (`docs/DRYRUN-HEXPAD.md`) built a different board with a different topology from
-this repo alone, reached every gate, and logged 49 shortfalls — 44 of which are
-fixed in v0.2. z_board is where the pipeline came from; hexpad is the evidence
-that it transfers.
+this repo alone, reached every gate, and — across the original build and two
+user-directed revisions — logged **94 shortfalls, of which 89 are fixed** as of
+v0.3. z_board is where the pipeline came from; hexpad is the evidence that it
+transfers.
+
+The traffic now runs both ways, which is the point of keeping two fixtures:
+hexpad's re-spec found that the schematic-parity gate had **never been
+enforceable** in any project this repo scaffolded, and the audit that finding
+demanded found the same blind spot on all four z_board boards — hiding two
+missing components on one of them. A gap found forwards fixed a defect
+backwards.
 
 ## 1. Three asset classes, three containers
 
@@ -208,17 +216,23 @@ write.
    rediscover is a gap in the skill, a missing knowledge card, or a script bug.
    **done — see `docs/DRYRUN-HEXPAD.md`.** hexpad reached ERC 0 / DRC 0 with
    parity / 0 unconnected on both the board and its proto slice, an asserted
-   21-file fab package, and 215 passing enclosure checks; a user-directed **rev
+   21-file fab package, and 215 passing enclosure checks. A user-directed **rev
    2** (module and display rotated 90°, board shrunk, case rebuilt) then reached
-   the same gates at 239 enclosure checks, which tested whether a *change* can
-   be trusted rather than whether a board can be designed. Together they logged
-   **60 gaps**: 55 fixed in v0.2.x, 4 deferred (`docs/BACKLOG.md`), 1
-   works-as-intended. None
-   of the 49 was a design failure — every one was friction, a missing statement,
-   or a tool that could not express something true. The macro pad exercised the
-   whole spine once (direct-wire keys, an SPI display peripheral, a module on
-   sockets, a battery, an enclosure with a plate and inserts) at a scale where a
-   wrong answer cost minutes.
+   the same gates at 239 enclosure checks, testing whether a *change* can be
+   trusted rather than whether a board can be designed. A **rev 3 / 3.1
+   re-spec** (diode matrix, rotary encoder, a 3D model per footprint, and four
+   parts hand-dragged in pcbnew — two onto the other face) reached them again at
+   416 enclosure checks, and tested the two things neither earlier round did:
+   whether a change of *requirements* can be absorbed, and whether a **human
+   edit** can be adopted back into a generate-only pipeline. Together they
+   logged **94 gaps**: 89 fixed by v0.3, 4 deferred (`docs/BACKLOG.md`), 1
+   works-as-intended. None was a design failure — every one was friction, a
+   missing statement, or a tool that could not express something true. The macro
+   pad exercised the whole spine once (direct-wire keys, an SPI display
+   peripheral, a module on sockets, a battery, an enclosure with a plate and
+   inserts) at a scale where a wrong answer cost minutes — and the re-spec
+   proved the more valuable property: **the cheapest place to find a decorative
+   gate is a board small enough that you notice its output is impossible.**
 4. **Harden.** Agent definitions refined from what the dry run exposed —
    **done for the dry run's findings** (per-phase report templates, the
    `design.py` round-trip carve-out, the research doctrine's third outcome, the

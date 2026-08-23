@@ -26,9 +26,15 @@ __pycache__/
 # --- generated gate reports -------------------------------------------------
 erc.json
 drc.json
-drc-all.json
+drc-all*.json
 .digest-before
 .digest-after
+# `make warnings` rotates the previous report to drc-all-<target>.prev.json, so
+# the finding-class diff always has an input.  That covers ONE revision.  To
+# keep a baseline across a clean checkout, commit one report deliberately and
+# name it — `make warnings BASELINE=rev3-drc-all.json` — so it is a claim on
+# the record rather than whatever the last local run happened to leave behind:
+# !rev3-drc-all.json
 
 # --- KiCad per-user state (never the project's own settings) -----------------
 *.kicad_prl

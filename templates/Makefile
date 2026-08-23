@@ -7,8 +7,9 @@
 #   make <name>     regenerate one target
 #   make erc        ERC only — THE PHASE-3 GATE (no board needed)
 #   make check      validate only, no regeneration  <- THE PHASE-4 GATE
-#   make warnings   every surviving finding, grouped by owner; diffs a rev
-#                   against a BASELINE= report and fails on a new class
+#   make warnings   every surviving finding, grouped by owner; rotates the
+#                   previous report aside and diffs the finding classes against
+#                   it (or against a BASELINE=, which also fails on a new one)
 #   make fab        gerbers + drill + pick-and-place + BOM + zip, per board
 #                   (depends on `check`: never export an ungated board)
 #   make renders    3D renders and layer plots, for eyeballing
@@ -175,23 +176,45 @@ $(foreach t,$(TARGETS),$(eval $(call CHECK_RULE,$(t))))
 # are not gated, so a warning class introduced by a revision otherwise arrives
 # in silence.  This enumerates every surviving finding grouped BY OWNER — which
 # is also the proof a severity demotion has to keep making every rev ("25/25
-# name DISP1+MCU1", see references/kicad-api.md §4) — and can diff the finding
+# name DISP1+MCU1", see references/kicad-api.md §4) — and diffs the finding
 # classes against the previous rev's report.
 #
-#   make warnings                          enumerate, grouped by owner
-#   make warnings BASELINE=drc-all-old.json   ...and FAIL on any new class
+#   make warnings                          enumerate, and diff the PREVIOUS run
+#   make warnings BASELINE=some-report.json   ...against a named baseline, and
+#                                             FAIL on any new class
 #
-# Keep a baseline: commit the report, or copy it aside before a revision.
+# THE BASELINE IS A BUILD ARTIFACT, not something to remember.  `report.py
+# --baseline` is exactly the right check and it used to have no input: this
+# target overwrote `drc-all-<t>.json` in place, so by the time you wanted a
+# baseline the previous rev's report was gone, and a revision ended up
+# reconstructing the previous class set out of PROSE in an as-built document.
+# So: the existing report is rotated to `drc-all-<t>.prev.json` FIRST, and the
+# diff runs automatically once a previous report exists.  Commit the report if
+# you want a baseline that survives a clean checkout.
+#
+# The automatic diff does NOT pass --strict (the previous run may have been
+# mid-revision); an explicit BASELINE= does, because that is a deliberate claim
+# about a known-good rev.
 
 warnings: $(addprefix warnings-,$(TARGETS))
 
 define WARN_RULE
 warnings-$(1):
+	@if [ -f $$(HERE)drc-all-$(1).json ]; then \
+	   cp $$(HERE)drc-all-$(1).json $$(HERE)drc-all-$(1).prev.json; fi
 	-@$$(CLI) pcb drc --schematic-parity --severity-all --format json \
 	   -o $$(HERE)drc-all-$(1).json \
 	   $$($(1)_AT)$$($(1)_NAME).kicad_pcb $$(DENOISE)
-	@$$(PY) $$(SCRIPTS)/report.py $$(HERE)drc-all-$(1).json --by-owner \
-	  $$(if $$(BASELINE),--baseline $$(BASELINE) --strict,)
+	@if [ -n "$$(BASELINE)" ]; then \
+	   $$(PY) $$(SCRIPTS)/report.py $$(HERE)drc-all-$(1).json --by-owner \
+	     --baseline $$(BASELINE) --strict; \
+	 elif [ -f $$(HERE)drc-all-$(1).prev.json ]; then \
+	   $$(PY) $$(SCRIPTS)/report.py $$(HERE)drc-all-$(1).json --by-owner \
+	     --baseline $$(HERE)drc-all-$(1).prev.json; \
+	 else \
+	   $$(PY) $$(SCRIPTS)/report.py $$(HERE)drc-all-$(1).json --by-owner; \
+	   echo "  (no previous report to diff — this run wrote the first baseline)"; \
+	 fi
 endef
 $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
 

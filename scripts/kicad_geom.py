@@ -10,6 +10,9 @@ case script can `import kicad_geom` instead of transcribing coordinates.
 
     python3 scripts/kicad_geom.py board.kicad_pcb
     python3 scripts/kicad_geom.py board.kicad_pcb --json | jq .outline
+    python3 scripts/kicad_geom.py --diff old.kicad_pcb new.kicad_pcb
+    python3 scripts/kicad_geom.py --diff old.kicad_pcb new.kicad_pcb \
+                                  --as-constants
 
 Coordinates are raw KiCad board coordinates: millimetres, x east, **y south**.
 Enclosure code almost always wants y negated to get a right-handed frame; do
@@ -49,6 +52,7 @@ table's column headings match them so a consumer never has to guess
 (`ROTATION`, not `ROT`):
 
     ref value lib layer      identity, as the file has it
+    designator               the ref PARSED: {"prefix": "DISP", "index": 1}
     x y rotation             placement: board coords, degrees
     side                     the footprint's own layer — PLACEMENT ONLY
     pad_side through_hole
@@ -57,6 +61,33 @@ table's column headings match them so a consumer never has to guess
     pads_bbox                union of every copper pad, board coords
     body_bbox                F.Fab/B.Fab bbox — the part BODY, board coords
     fab_items                each Fab graphic separately: kind, layer, bbox
+    obstacle_above           what really stands ABOVE the board: {bbox, basis,
+    obstacle_below           courtyard_dropped} — or null where nothing does
+
+`designator` exists because **reference designators are not a prefix-free
+code** and `ref.startswith("D")` is a trap: `D`/`DISP`, `R`/`RN`, `C`/`CN`,
+`J`/`JP`.  A height ledger that dispatched on `startswith("D")` gave a nice!view
+(`DISP1`) an SOD-123 diode's height and reported 8 diodes on a 7-diode board.
+Switch on `designator["prefix"] == "D"`, never on the string.
+
+`obstacle_above` / `obstacle_below` answer the question a deck window or a
+battery bay actually asks — *what is in the way on this face* — instead of
+leaving each project to pick between `courtyard`, `body_bbox` and their union.
+The three cases (`references/mechanical.md` §4) and the `basis` each reports:
+
+    courtyard∪body   the default: a part whose hardware can exceed its own
+                     courtyard (a socketed module's courtyard is drawn round
+                     its pad grid and comes out SMALLER than the part).
+    body             a THROUGH-HOLE part whose courtyard is inflated by its own
+                     pad row — flat copper and silk, nothing a deck can hit.
+                     `courtyard_dropped` says how much was excluded, so the
+                     choice is visible rather than implied.  (Measured: ENC1's
+                     courtyard runs 3.0 mm further north than anything that
+                     stands above the board; sizing a deck window on the union
+                     left a mounting boss 0.020 mm of seat.)
+    courtyard        no Fab body to union with — the courtyard is all the file
+                     knows, and the part's body then has to come from its
+                     datasheet or KB card and be asserted.
 
 `courtyard`, `pads_bbox` and `body_bbox` are rotation-resolved, and `None` when
 the footprint carries no such geometry.
@@ -74,11 +105,40 @@ slide-switch knob, a button plunger, a connector shell — is usually its own
 group of Fab lines, and the case has to slot exactly that.  Every item is
 reported separately, in board coordinates with the rotation already applied, so
 the caller unions the ones it means instead of writing a bespoke pcbnew script.
+
+THE ADOPTION DIFF (`--diff OLD NEW`).  A generated board's docstring says never
+to hand-edit the `.kicad_pcb`, and that is right — but dragging four footprints
+in pcbnew is the *normal* way a person says "put the encoder over here", so the
+round trip needs a defined re-entry path rather than a prohibition.  `--diff`
+is the machine-readable half of it: per-ref Δx / Δy / Δrot / **Δside**, refs
+added and removed, and changes to the `protrudes` SETS.
+
+Both halves of that matter, and the second is the one nothing else catches:
+
+  * **A hand placement is an `(x, y, rot, layer)` tuple and all four are the
+    spec.** A rotation adopted at 180° instead of 0° reverses which pad of a
+    two-terminal part faces the net leaving it, which is a routing topology
+    change (measured cost: two vias).  A part that came back on the other
+    *face* is a bigger change than any position move.
+  * **A keepout derived from a component bound is invalidated by that
+    component LEAVING**, not only by it moving.  Two parts moving to the front
+    face took the protrude-below set from 37 refs to 35 — and they were the two
+    that bounded a battery bay, whose plan area then grew ~68 % with every
+    remaining ref still perfectly in the ledger.  A stale ledger that is merely
+    *conservative* is the failure mode nobody looks for.
+
+`--as-constants` prints the moved set as a python dict ready to paste into an
+emitter, because transcribing eight coordinates by hand out of a JSON dump is a
+transcription risk with no checker behind it: a board generated from the wrong
+adopted coordinate is perfectly clean.  Adopt, regenerate, then run `--diff
+--strict` between the backup and the regenerated board and require **no**
+differences — that last step is what makes the whole round trip safe.
 """
 
 import argparse
 import json
 import math
+import re
 import sys
 
 # Board-level graphic items that can carry the outline.
@@ -320,6 +380,72 @@ def _pad_bbox(node, origin, angle):
             max(p[0] for p in pts), max(p[1] for p in pts)]
 
 
+# A reference designator is PREFIX + digits, and the prefixes are not a
+# prefix-free code (`D`/`DISP`, `R`/`RN`, `C`/`CN`, `J`/`JP`), so the split has
+# to be parsed rather than guessed with startswith().
+_DESIGNATOR = re.compile(r"^([A-Za-z_]+?)(\d+)$")
+
+
+def designator(ref):
+    """{'prefix': 'DISP', 'index': 1} — or index None for an unparseable ref.
+
+    A digitless ref is itself a defect (it poisons kicad-cli's annotation
+    check, see references/kicad-api.md §4), so it is reported with the whole
+    string as the prefix and a null index rather than silently split.
+    """
+    match = _DESIGNATOR.match(ref or "")
+    if not match:
+        return {"prefix": ref or "", "index": None}
+    return {"prefix": match.group(1), "index": int(match.group(2))}
+
+
+# How much wider than the part body a courtyard may be drawn around a pad row
+# before the excess stops being explainable as pad-plus-clearance.  Courtyards
+# are conventionally the pad extent plus 0.25…0.5 mm.
+PAD_COURTYARD_SLOP = 0.75
+
+
+def _obstacle_rect(courtyard, body, pads_bbox, through_hole):
+    """({bbox, basis, courtyard_dropped}) — what physically stands on a face.
+
+    See the module docstring for the three cases.  `courtyard_dropped` is the
+    furthest the courtyard reaches past the chosen bbox, so a consumer can see
+    exactly how much was excluded and on what grounds.
+    """
+    if not body:
+        if not courtyard:
+            return None if not pads_bbox else {
+                "bbox": list(pads_bbox), "basis": "pads",
+                "courtyard_dropped": 0.0}
+        return {"bbox": list(courtyard), "basis": "courtyard",
+                "courtyard_dropped": 0.0}
+    if not courtyard:
+        return {"bbox": list(body), "basis": "body", "courtyard_dropped": 0.0}
+
+    def excess(outer, inner):
+        """How far `outer` reaches past `inner`, per side, clamped at 0."""
+        return [max(inner[0] - outer[0], 0.0), max(inner[1] - outer[1], 0.0),
+                max(outer[2] - inner[2], 0.0), max(outer[3] - inner[3], 0.0)]
+
+    over_body = excess(courtyard, body)
+    dropped = round(max(over_body), 4)
+    # The pad-row-inflated case: a through-hole part whose courtyard exceeds its
+    # body only where its own PADS also do.  Then the excess is flat copper and
+    # silk — nothing that stands above the board.  Both conditions are needed:
+    # the excess must be real, and the pads must account for it.  A courtyard
+    # that is merely a uniform margin round the body keeps the conservative
+    # union.
+    if through_hole and pads_bbox and dropped > 0.01:
+        pads_over_body = excess(pads_bbox, body)
+        if max(pads_over_body) > 0.01 and all(
+                c <= p + PAD_COURTYARD_SLOP
+                for c, p in zip(over_body, pads_over_body)):
+            return {"bbox": list(body), "basis": "body",
+                    "courtyard_dropped": dropped}
+    return {"bbox": _union([courtyard, body]), "basis": "courtyard∪body",
+            "courtyard_dropped": 0.0}
+
+
 def _pad_faces(pad_layer_names):
     """'top' / 'bottom' / 'both' / None from a set of pad layer names."""
     faces = set()
@@ -353,7 +479,8 @@ def _footprint(node):
             value = names[2]
 
     fp = {"ref": ref, "value": value, "lib": lib, "x": round(x, 4),
-          "y": round(y, 4), "rotation": rot, "side": side, "layer": layer}
+          "y": round(y, 4), "rotation": rot, "side": side, "layer": layer,
+          "designator": designator(ref)}
 
     holes = []
     pad_boxes, pad_layer_names, through = [], set(), False
@@ -397,14 +524,22 @@ def _footprint(node):
         faces.add(pad_side)
     if pad_side == "both" or through:
         faces.add(other)                             # tails stand proud
+    # One obstacle rect per face the hardware actually reaches, so the
+    # enclosure phase reads a decision instead of making one.  `protrudes` is
+    # what decides which faces get one; the rect is the same on both, because
+    # the file knows the part's plan extent and not its per-face silhouette.
+    pads_box = _union(pad_boxes)
+    rect = _obstacle_rect(courtyard, body, pads_box, through)
     fp.update({"courtyard": courtyard,
                "body_bbox": body,
                "fab_items": fab_items,
-               "pads_bbox": _union(pad_boxes),
+               "pads_bbox": pads_box,
                "pad_layers": sorted(pad_layer_names),
                "pad_side": pad_side,
                "through_hole": through,
-               "protrudes": sorted(faces)})
+               "protrudes": sorted(faces),
+               "obstacle_above": rect if "top" in faces else None,
+               "obstacle_below": rect if "bottom" in faces else None})
 
     outline = []
     for head in FP_GRAPHIC_ITEMS:
@@ -581,6 +716,24 @@ def print_table(board, max_rows=0):
             print("  %-10s body reaches %smm past the courtyard"
                   % (ref, fmt(over)))
 
+    # The other direction, and the one that costs a mounting boss: a courtyard
+    # inflated by a through-hole part's own pad row is not an obstacle.
+    inflated = [(f["ref"] or f["lib"], f["obstacle_above"]
+                 or f["obstacle_below"])
+                for f in fps
+                if (f.get("obstacle_above") or f.get("obstacle_below") or {})
+                .get("basis") == "body"]
+    inflated = [(ref, o) for ref, o in inflated
+                if o and o["courtyard_dropped"] > 0.01]
+    if inflated:
+        print("\n%d through-hole footprint(s) whose COURTYARD is inflated by "
+              "their own pad row —\n`obstacle_above`/`obstacle_below` are the "
+              "BODY for these, and the excess is flat\ncopper a deck cannot "
+              "hit:" % len(inflated))
+        for ref, o in sorted(inflated, key=lambda r: -r[1]["courtyard_dropped"]):
+            print("  %-10s courtyard reaches %smm past the body (dropped)"
+                  % (ref, fmt(o["courtyard_dropped"])))
+
     # The one line that stops an underside ledger being built from `side`.
     liars = [f for f in fps
              if f.get("pad_side") not in (None, "both", f["side"])]
@@ -606,16 +759,201 @@ def print_table(board, max_rows=0):
                                             for f in missing)))
 
 
+# ------------------------------------------------------------------- the diff
+
+# Below this, a placement "change" is the file's own 4-decimal rounding.
+MOVE_TOL = 1e-4
+
+
+def _turn(degrees):
+    """A rotation delta as the smallest equivalent turn, in (-180, 180].
+
+    Rotation is modular, so a bare subtraction can report a 270 degree change
+    for a 90 degree turn — and the sign of a rotation delta is what tells you
+    which way a two-terminal part's pads swapped.
+    """
+    turn = round(degrees, 4) % 360.0
+    return round(turn - 360.0 if turn > 180.0 else turn, 4)
+
+
+def diff_boards(old, new):
+    """Placement differences between two parsed boards.
+
+    Keyed on ref, because that is the only stable identity a footprint has
+    across a hand edit and a regeneration (position is what changed, and the
+    KIID is minted fresh on every save — see kicad_digest.py).
+    """
+    was = {f["ref"]: f for f in old["footprints"] if f["ref"]}
+    now = {f["ref"]: f for f in new["footprints"] if f["ref"]}
+    moved = []
+    for ref in sorted(set(was) & set(now)):
+        a, b = was[ref], now[ref]
+        delta = {"ref": ref,
+                 "dx": round(b["x"] - a["x"], 4),
+                 "dy": round(b["y"] - a["y"], 4),
+                 "drot": _turn(b["rotation"] - a["rotation"]),
+                 "side": None if a["side"] == b["side"]
+                         else "%s -> %s" % (a["side"], b["side"]),
+                 "protrudes": None
+                 if a.get("protrudes") == b.get("protrudes")
+                 else "%s -> %s" % (",".join(a.get("protrudes") or []),
+                                    ",".join(b.get("protrudes") or [])),
+                 "x": b["x"], "y": b["y"], "rotation": b["rotation"],
+                 "to_side": b["side"]}
+        if (abs(delta["dx"]) > MOVE_TOL or abs(delta["dy"]) > MOVE_TOL
+                or abs(delta["drot"]) > MOVE_TOL or delta["side"]
+                or delta["protrudes"]):
+            moved.append(delta)
+
+    def by_face(board):
+        out = {}
+        for face in ("top", "bottom"):
+            out[face] = sorted(f["ref"] for f in board["footprints"]
+                               if face in (f.get("protrudes") or []))
+        return out
+
+    faces_was, faces_now = by_face(old), by_face(new)
+    return {"added": sorted(set(now) - set(was)),
+            "removed": sorted(set(was) - set(now)),
+            "moved": moved,
+            "protrudes": {face: {"was": len(faces_was[face]),
+                                 "now": len(faces_now[face]),
+                                 "gained": sorted(set(faces_now[face])
+                                                  - set(faces_was[face])),
+                                 "lost": sorted(set(faces_was[face])
+                                                - set(faces_now[face]))}
+                          for face in ("top", "bottom")},
+            "footprints": {"was": len(was), "now": len(now)}}
+
+
+def print_diff(old, new, result):
+    print("--- placement diff: %s -> %s ---" % (old["source"], new["source"]))
+    for ref in result["added"]:
+        fp = [f for f in new["footprints"] if f["ref"] == ref][0]
+        print("  + added    %-10s %s,%s rot %g %s"
+              % (ref, fmt(fp["x"]), fmt(fp["y"]), fp["rotation"], fp["side"]))
+    for ref in result["removed"]:
+        print("  - removed  %-10s" % ref)
+    for d in result["moved"]:
+        bits = []
+        if abs(d["dx"]) > MOVE_TOL:
+            bits.append("dx %+.4f" % d["dx"])
+        if abs(d["dy"]) > MOVE_TOL:
+            bits.append("dy %+.4f" % d["dy"])
+        if abs(d["drot"]) > MOVE_TOL:
+            bits.append("drot %+g" % d["drot"])
+        if d["side"]:
+            bits.append("side %s" % d["side"])
+        if d["protrudes"]:
+            bits.append("protrudes %s" % d["protrudes"])
+        print("  ~ moved    %-10s %s" % (d["ref"], "  ".join(bits)))
+
+    # The set change, not only the per-ref deltas: a keepout derived from a
+    # component bound is invalidated by that component LEAVING the face.
+    for face in ("top", "bottom"):
+        p = result["protrudes"][face]
+        if p["was"] == p["now"] and not p["gained"] and not p["lost"]:
+            continue
+        marks = ["+%s" % r for r in p["gained"]] + \
+                ["-%s" % r for r in p["lost"]]
+        print("  ! protrudes %-6s %d -> %d refs   %s"
+              % (face, p["was"], p["now"], ", ".join(marks)))
+        if p["lost"]:
+            print("              RE-DERIVE every keepout bounded by %s: a "
+                  "ledger that LOST a\n              part is still green and "
+                  "now merely conservative — the one failure\n              "
+                  "mode nobody looks for." % ", ".join(p["lost"]))
+        if p["gained"]:
+            print("              %s now stand%s on this face and must be IN "
+                  "its ledger."
+                  % (", ".join(p["gained"]),
+                     "" if len(p["gained"]) > 1 else "s"))
+
+    total = (len(result["added"]) + len(result["removed"])
+             + len(result["moved"]))
+    if not total:
+        print("  no placement differences (%d footprints, to %g mm)"
+              % (result["footprints"]["now"], MOVE_TOL))
+    else:
+        print("  %d difference(s): %d added, %d removed, %d moved  "
+              "(%d -> %d footprints)"
+              % (total, len(result["added"]), len(result["removed"]),
+                 len(result["moved"]), result["footprints"]["was"],
+                 result["footprints"]["now"]))
+    return total
+
+
+def print_constants(new, result):
+    """The moved set as a pasteable python dict.
+
+    Transcribing coordinates by hand out of a dump is a transcription risk with
+    no checker behind it: a board generated from the wrong adopted coordinate is
+    perfectly clean.  All four fields are emitted because all four are the spec.
+    """
+    rows = [(d["ref"], d["x"], d["y"], d["rotation"], d["to_side"])
+            for d in result["moved"]]
+    for ref in result["added"]:
+        fp = [f for f in new["footprints"] if f["ref"] == ref][0]
+        rows.append((ref, fp["x"], fp["y"], fp["rotation"], fp["side"]))
+    print("\n# adopted from %s — %d footprint(s)" % (new["source"], len(rows)))
+    print("# (x, y, rotation, side) in board coords: x east, y SOUTH.")
+    print("# Regenerate, then `kicad_geom.py --diff BACKUP REGENERATED "
+          "--strict`\n# must report no differences: that is the check that "
+          "makes adoption safe.")
+    print("ADOPTED = {")
+    for ref, x, y, rot, side in sorted(rows):
+        # repr(float), not %g: a coordinate that prints as `5` instead of `5.0`
+        # is an int literal in the emitter, and integer division is one edit
+        # away from silently truncating a placement.
+        print('    "%s": (%r, %r, %r, "%s"),'
+              % (ref, round(x, 4), round(y, 4), round(float(rot), 4), side))
+    print("}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("board", help="a .kicad_pcb file")
+    ap.add_argument("board", nargs="+", help="a .kicad_pcb file (two with "
+                                            "--diff)")
     ap.add_argument("--json", action="store_true",
                     help="emit the full geometry as JSON")
     ap.add_argument("--max-rows", type=int, default=0,
                     help="truncate the footprint table (0 = all)")
+    ap.add_argument("--diff", action="store_true",
+                    help="compare two boards' placements: per-ref dx/dy/drot/"
+                         "dside, refs added or removed, and protrudes-set "
+                         "changes")
+    ap.add_argument("--as-constants", action="store_true",
+                    help="with --diff, also print the moved set as a python "
+                         "dict ready to paste into an emitter")
+    ap.add_argument("--strict", action="store_true",
+                    help="with --diff, exit 1 if the two boards differ — the "
+                         "check that verifies a regeneration reproduced the "
+                         "placements it adopted")
     args = ap.parse_args()
 
-    board = read_board(args.board)
+    if args.diff or args.as_constants:
+        if len(args.board) != 2:
+            ap.error("--diff takes exactly two board files (OLD NEW)")
+        old, new = read_board(args.board[0]), read_board(args.board[1])
+        result = diff_boards(old, new)
+        if args.json:
+            json.dump(result, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+            changes = (len(result["added"]) + len(result["removed"])
+                       + len(result["moved"]))
+        else:
+            changes = print_diff(old, new, result)
+        if args.as_constants:
+            print_constants(new, result)
+        if args.strict and changes:
+            print("  %d placement difference(s) and --strict is set" % changes,
+                  file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if len(args.board) != 1:
+        ap.error("pass one board file, or two with --diff")
+    board = read_board(args.board[0])
     if args.json:
         json.dump(board, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

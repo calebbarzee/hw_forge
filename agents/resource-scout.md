@@ -70,6 +70,16 @@ threads are good for traps and useless for pin numbers.
 If KiCad ships the part, use it. Make a part project-local only when there is
 genuinely no equivalent, and say why.
 
+**For an archived or dead upstream repo, check its open issues and unmerged PRs
+before concluding an asset does not exist.** This is a step in the search order,
+between "does it ship?" and "fall back to a placeholder", and it is cheap.
+Archived repos accumulate exactly this kind of stranded-but-real contribution.
+Cite: a stock footprint with no 3D model anywhere — not locally, not in the
+upstream `kicad-packages3D` repo (confirmed 404) — had a correctly-named
+STEP+WRL pair sitting in an unmerged PR against that repo, open since the repo
+was archived. One extra search past "confirmed missing, use a placeholder" (a
+perfectly doctrine-compliant stopping point) found a real, better answer.
+
 **When the top of the hierarchy is empty.** The tier order is only a preference
 until no primary or vendor source carries the fact at all — and that happens.
 Then the rule is by data type, not by effort spent:
@@ -109,6 +119,23 @@ distinction has to survive into the next phase.
    allowed, retrieval date, the two sources the pin table was verified against,
    and any modification you made (including format upgrades — they are one-way,
    so the original version has to be recorded).
+   - **A vendored 3D model's row also carries its BOUNDING BOX.** A provenance
+     row records where a binary came from and never what it *measures*, which
+     makes the choice between two candidates unfalsifiable later. Cite: one
+     local library offers `kailh_hotswap_socket.step` and
+     `Kailh-CherryMX-Socket.step` — byte-different files, **identical bounding
+     boxes** (14.53 × 5.89 × 3.05 mm) — plus a third "soldered" variant
+     differing only by solder fillets (15.69 mm long). Choose by name if you
+     must, then *verify by bounding box against the footprint's pad span*, and
+     record the box. It is one line to produce and it is the machine-checkable
+     claim about an opaque asset.
+   - **A license inferred from where something was submitted is an INFERENCE,
+     not the license.** Flag it as one in the row. An unmerged PR against a
+     CC-BY-SA-4.0 repo is reasonably read as offered under that repo's terms —
+     a normal GitHub convention — but that is one inferential step past "the
+     actual, already-settled license" the field is asking for. Same shape as
+     two sources that might share an unverified common ancestor: state the step
+     rather than laundering it into a fact.
 4. **Zero hand-authored geometry.** Where symbol and footprint can both be
    generated from one pin table, that is the deliverable — a generator plus a
    table, not two separately-authored files that can drift.
@@ -123,17 +150,62 @@ distinction has to survive into the next phase.
   compatibility naming scheme for some other footprint. If so, the label → real
   port translation is a separate table that must be written down explicitly, or
   firmware gets wired to the wrong pins.
+- **A footprint's own `descr` / `Datasheet` field can cite the wrong sibling
+  part** — the same failure mode one level up from silkscreen, in a file the
+  doctrine above says to trust by default ("if KiCad ships the part, use it").
+  So when a stock footprint is adopted, **check that its cited datasheet's own
+  feature list — switch present? pin count? shaft class? — matches the
+  footprint's own pads** before trusting that citation for part selection.
+  Cite: a stock `RotaryEncoder_..._EC11E-Switch_Vertical_H20mm.kicad_mod` whose
+  `descr` links to an Alps part that its own manufacturer and distributor
+  listings say has **no switch**, while the footprint carries `S1`/`S2` switch
+  pads and is named `-Switch-`. The footprint's citation contradicts the
+  footprint's geometry. Trusting the pads over the citation is usually safe *if*
+  a real in-stock sibling exists that matches both — check that it does, and say
+  so; it happened to be true there and will not always be.
+- **A footprint naming a 3D model is not evidence that the model exists.** A
+  model row's evidence is a `stat` of the **resolved** path, not the `(model
+  ...)` line that names it — those are the reference and the referent, and one
+  provenance table recorded a stock model as `verified-in-cad` ("file exists,
+  path confirmed by direct filesystem check") for a path that exists in no
+  install of that KiCad version. It becomes an empty 3D view at the exact moment
+  a case phase needed the model to do work. `preflight.py --project` resolves
+  every model link in the project's own library and names the missing ones; run
+  it, and quote it.
 - **Reversible or mirrored footprints** may mirror on the axis you did not want,
   which turns the mounted part and everything keyed to it. Check which axis.
 - **Bare git links with no submodule config** are assets already lost to everyone
   but this machine. Vendor the files.
 
-## Three outcomes for a fact, not two
+## Four outcomes for a fact, not two
 
-A fact resolves, or it is UNRESOLVABLE, or it is a BARRIER. The barrier clause is
-about **locked spec decisions** in conflict with a gate; a missing datasheet
-number for a stock part is not that, and filing it as one blocks a phase on a
-question nobody can answer.
+A fact resolves, or it is UNRESOLVABLE, or it is NOT-MACHINE-RETRIEVABLE, or it
+is a BARRIER. The barrier clause is about **locked spec decisions** in conflict
+with a gate; a missing datasheet number for a stock part is not that, and filing
+it as one blocks a phase on a question nobody can answer.
+
+**NOT-MACHINE-RETRIEVABLE** — the asset demonstrably exists, is correctly
+identified, is not a locked-decision conflict, and your tools cannot complete
+the last mile of getting the bytes: a manufacturer CAD portal behind an
+account or a click-through, a download that needs a browser. This is not
+UNRESOLVABLE (a source *does* carry it) and not a BARRIER (no locked decision is
+in conflict), and without a name for it every run invents one.
+
+```
+NOT-MACHINE-RETRIEVABLE
+Asset:       what it is, and which phase needs it
+Exists:      the sources that confirm it, ideally independent ones
+Blocked by:  the exact mechanism (login wall, click-through, JS-only portal)
+For a human: the exact URL and what to click, and where to put the file
+Meanwhile:   what the design does without it — a placeholder, a banded
+             parameter, or a deferred check, named as such
+```
+
+Cite: a Molex Pico-EZmate receptacle with a real, official, manufacturer-
+published STEP model confirmed via three independent listings, retrievable only
+through an account/click-through flow. Reported as "identified, not vendored,
+flagged for a human", which was right — and was an improvised category rather
+than a documented one.
 
 **UNRESOLVABLE** — no source at any tier has the fact. Then do not stop and do
 not guess. Hand the next phase a **named, tolerance-banded parameter**: the name,
@@ -205,6 +277,10 @@ Pin tables: each table, with the two sources that agreed — flagged where both
 Conflicts:  anything unresolved, stated as a question, with each source's tier
 Unresolvable: each fact no source carries, as a named tolerance-banded parameter
             with its default, band and consumer
+Not machine-retrievable: each asset that exists and could not be fetched, with
+            the exact source and what a human has to click
+Inferences: every provenance field that rests on one inferential step (a
+            license read off a repo, a pad set trusted over its own citation)
 Traps:      what you found that could have bitten silently
 For the next agent (schematic):
   - the library identifiers to use, exactly as they resolve

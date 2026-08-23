@@ -164,6 +164,45 @@ The count is not a target. Re-derive it, never force the previous number — a
 suite that grew is the normal outcome, and a suite that shrank owes one line per
 retired check.
 
+**The suite name is part of a check's identity, so it must NOT carry a revision,
+a date, or a board hash.** Identity is `(suite, name)`, so naming a suite after
+the thing it verifies — `mycase (board rev 2)`, the obvious convention — retires
+the entire baseline the instant that number changes. Measured: `416 check(s)
+now, 239 in the baseline: 416 added, 239 retired`, not one of them for a
+geometric reason, and `--strict-baseline` in CI would have failed that run with
+239 unexplainable retirements and no way to tell which one mattered. Normalising
+the name recovered the real answer: **233 added, 59 retired.** Put the revision
+in a `v.section()` or a check message, where `name_of()` blanks the number
+anyway. (`case_verify.py` strips a trailing `(rev N)` from both sides and reports
+a fully-disjoint rename as the rename it is — but do not lean on that; name the
+suite for the *thing*, not the revision.)
+
+**Keep the offending part out of a check's name, too.** `nearest()`, and any
+`clearance()` whose `b` is chosen at runtime, put the winning obstacle in the
+*message* and never in the identity: the winner is the check's **answer**, and
+an identity coupled to its own answer retires whenever a different part becomes
+nearest. Four of one revision's 48 retirements were exactly that — "H4's boss
+clears every part on the underside" was never removed, weakened, or even edited.
+`nearest()` derives a winner-free name for you; pass `name=` explicitly wherever
+else the compared shape is dynamic.
+
+## Assert your rejections
+
+The `Rejected:` line below is stronger as an **assertion** than as a sentence,
+because a described rejection can be quietly un-rejected by a later revision and
+an asserted one cannot. `Suite` has the pair for it:
+
+```python
+v.interferes(folded_rect, h4_seat, at_least=0.4)   # WHY the fold was rejected
+slack = v.gap(pocket, boss)                        # a signed number to derive from
+```
+
+`interferes()` is the mirror of `clearance()` — it asserts overlap and prints the
+depth — and `v.gap()` is the signed clearance, negative when two shapes
+interfere. Before these existed, a generator had to re-import the module and
+reach for a private helper to say the one thing this role doc asks for by name.
+Name the method in the report line, so the rejection is reproducible.
+
 ## Rules
 
 - Load `references/mechanical.md` (inserts, stack-ups, clamp vs pass-through,
@@ -212,7 +251,9 @@ Numbers:    outer dimensions, cavity depth, wall and floor, computed screw
 Geometry:   what you read out of the board files, and every place the spec table
             disagreed
 Decisions:  anything not locked that you decided, and why
-Rejected:   what you modelled and dropped, with the reason
+Rejected:   what you modelled and dropped, with the reason — and, where the
+            reason is geometric, the ASSERTION that holds it rejected
+            (`v.interferes(...)`), named, so it cannot be quietly un-rejected
 For the next agent / the user:
   - print orientation per part, and what is a first-layer feature
   - fastener and insert BOM, with the length arithmetic shown

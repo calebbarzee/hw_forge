@@ -77,6 +77,35 @@ The script asserts, and you should report, that:
   than every file-size floor combined.
 - **the BOM covers every placed part**, with an explicit populate/DNP column.
 
+**Answer this explicitly, every export: did the number of reflow passes change?**
+A paste layer crossing between empty and non-empty is a **process change**, not a
+count that moved, and the export now reports it separately — as `PROCESS CHANGE`,
+printed last, with the per-side placement split beside it — for exactly that
+reason. Before that split existed, `F.Paste is declared empty but defines 3
+aperture(s)` arrived as one of four failures, between "expected 38 holes, got 45"
+and "placements top: expected 13, got 15", in the same tone. Two of the four were
+bookkeeping; one meant **the board now needs a second stencil and a second reflow
+pass** — the single most consequential fact in that revision for whoever builds
+it. And all four were fixable by the same gesture, editing the number, which is
+precisely how a process change gets through unremarked.
+
+So the profile carries both the *reason* an assertion exists and the
+acknowledgement that it changed:
+
+```json
+"expect_empty_layers": [
+  {"layer": "F.Paste",
+   "because": "every SMD part is bottom-side: one stencil, one reflow pass"}
+],
+"became_populated": ["F.Paste"]
+```
+
+`became_populated` says a human has read the process change and accepted it, so
+the export passes while still printing what changed and what it costs. Deleting
+the layer from `expect_empty_layers` also passes, and says nothing — prefer the
+acknowledgement for one revision, then clean both up. Put the new pass count in
+the assembly notes **and** in the report.
+
 The export also writes a **`-manifest.txt`** into the output directory recording
 the board file's hash, the layer set, the tool versions, every assertion result
 and the gate's verdict. Report that it exists. A directory of gerbers is not

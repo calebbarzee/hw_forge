@@ -17,6 +17,29 @@ schematic, which is the failure mode a generated board is most prone to.
     python3 scripts/kicad_gate.py path/to/project_dir
     python3 scripts/kicad_gate.py path/to/project_dir --name boardname
     python3 scripts/kicad_gate.py path/to/project_dir --sch-only
+    python3 scripts/kicad_gate.py path/to/project_dir --strict-parity
+
+THE FLAG IS NOT THE GATE — parity severities are.  `--schematic-parity` is
+necessary and, on its own, not sufficient: KiCad 10 ships all five parity
+checks at *warning* severity, so `--severity-error` filters every one of them
+out before they are counted, and this script prints `parity ok` on a board it
+never checked.  Measured: hexpad rev 3, with a rev-2 board on disk, gated green
+(`ERC ok  DRC ok  parity ok  unconnected ok`) while `--severity-all` on the
+same board reported **31** parity issues — eight missing footprints and
+twenty-one net conflicts.  z_board's four boards were audited afterwards and
+had never enforced parity either; its proto slice was hiding two real missing
+footprints behind a green gate.
+
+So this script reads the project's own `.kicad_pro` and reports whether the
+parity result is *enforceable*:
+
+    parity      enforced at error severity (5/5)   <- a parity ok means something
+    parity      UNENFORCED  3 of 5 below error …   <- a parity ok means nothing
+
+`--strict-parity` turns that warning into a failing check, which is what CI
+wants.  `kicad_scaffold.py` writes the five promotions into every new project,
+so a scaffolded project is enforced from its first build; a project that
+predates that fix (or that demoted one deliberately) is what this detects.
 
 The project name is auto-discovered from the .kicad_pro / .kicad_sch /
 .kicad_pcb in the directory; --name is only needed when a directory holds more
@@ -39,6 +62,7 @@ a board that exists is always gated.
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -49,6 +73,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import report as report_mod
 from _kicad_env import cli_version, find_cli, run
+from kicad_scaffold import PARITY_SEVERITIES
 
 ERC_FLAGS = ["--severity-error", "--format", "json", "--exit-code-violations"]
 DRC_FLAGS = ["--schematic-parity", "--severity-error", "--format", "json",
@@ -88,6 +113,61 @@ def discover(project_dir, name=None):
     return name, base + ".kicad_sch", base + ".kicad_pcb"
 
 
+def parity_enforcement(project_dir, name):
+    """(enforced, unenforced, pro_path) for the five schematic-parity checks.
+
+    A parity check absent from `rule_severities` runs at KiCad's own default,
+    which is `warning` for all five — so "absent" and "warning" are the same
+    answer here, and both mean `--severity-error` never counted it.
+    """
+    pro = os.path.join(project_dir, name + ".kicad_pro")
+    severities = {}
+    found = os.path.exists(pro)
+    if found:
+        try:
+            with open(pro) as fh:
+                doc = json.load(fh)
+            severities = (((doc.get("board") or {})
+                           .get("design_settings") or {})
+                          .get("rule_severities") or {})
+        except (ValueError, OSError, AttributeError):
+            severities = {}                  # unreadable: assume KiCad default
+    rules = sorted(PARITY_SEVERITIES)
+    enforced = [r for r in rules if severities.get(r) == "error"]
+    return enforced, [r for r in rules if severities.get(r) != "error"], \
+        (pro if found else None)
+
+
+def say_parity(say, project_dir, name):
+    """Print whether a `parity ok` above this line means anything. Returns
+    the number of parity checks that cannot fail the gate.
+
+    The `enforced` line honours --quiet (it is an ok line); the UNENFORCED
+    block never does.  A warning that says the gate above it did not run is
+    not something a verbosity flag may hide — that is the whole failure this
+    check exists to prevent, one level up.
+    """
+    enforced, unenforced, pro = parity_enforcement(project_dir, name)
+    total = len(enforced) + len(unenforced)
+    if not unenforced:
+        say("  %-11s enforced at error severity (%d/%d)"
+            % ("parity", len(enforced), total))
+        return 0
+    print("  %-11s UNENFORCED  %d of %d parity checks are below error severity"
+          % ("parity", len(unenforced), total))
+    print("              in %s"
+          % (os.path.basename(pro) if pro
+             else "(no .kicad_pro in this directory)"))
+    print("              %s" % ", ".join(unenforced))
+    print("              KiCad ships all five at `warning`, so --severity-error "
+          "filtered them\n              out: any `parity ok` above is NOT a "
+          "gate. fix:")
+    print("                python3 scripts/kicad_scaffold.py %s --repatch %s"
+          % (project_dir, " ".join("--severity %s=error" % r
+                                   for r in unenforced)))
+    return len(unenforced)
+
+
 def run_check(cli, subcmd, flags, src, out_json):
     """Run one kicad-cli check.
 
@@ -108,7 +188,7 @@ def run_check(cli, subcmd, flags, src, out_json):
 
 
 def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
-         require_board=False):
+         require_board=False, strict_parity=False):
     """Run both checks. Returns (failures, verdict).
 
     `verdict` is "full" when both the schematic and the board were gated and
@@ -159,6 +239,12 @@ def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
         say("  %-11s %s  %s" % ("DRC", state.upper(), detail))
         failures += 1
 
+    # AFTER the DRC lines, deliberately: this qualifies the `parity` line the
+    # report just printed, and a reader has to see them together.
+    unenforced = say_parity(say, project_dir, name)
+    if unenforced and strict_parity:
+        failures += 1
+
     return failures, "full"
 
 
@@ -174,6 +260,10 @@ def main():
     ap.add_argument("--require-board", action="store_true",
                     help="fail if there is no board file, instead of skipping "
                          "DRC (use where a board must exist by now)")
+    ap.add_argument("--strict-parity", action="store_true",
+                    help="fail the gate when any schematic-parity check is "
+                         "below error severity in the .kicad_pro, i.e. when a "
+                         "`parity ok` could not have failed")
     args = ap.parse_args()
     if args.sch_only and args.require_board:
         ap.error("--sch-only and --require-board contradict each other")
@@ -191,7 +281,8 @@ def main():
 
     failures, _verdict = gate(args.project_dir, args.name, cli, args.quiet,
                               sch_only=args.sch_only,
-                              require_board=args.require_board)
+                              require_board=args.require_board,
+                              strict_parity=args.strict_parity)
     if failures:
         print("  %d check(s) failed" % failures, file=sys.stderr)
         sys.exit(1)

@@ -72,6 +72,39 @@ is indistinguishable from a layer dropped by accident.  Declaring the set also
 makes it **exhaustive** — any other aperture-free layer then fails, which is
 how a *newly* empty layer gets caught.  Declare nothing and undeclared empty
 layers are reported as notes instead.
+
+A declared-empty layer may also carry its reason, which is how the check stops
+being bookkeeping:
+
+      "assert": {
+        "expect_empty_layers": [
+          {"layer": "F.Paste",
+           "because": "L1 puts every SMD part on the bottom face: one stencil,
+                       one reflow pass"}
+        ],
+        "became_populated": ["F.Paste"]
+      }
+
+A PASTE LAYER CROSSING BETWEEN EMPTY AND NON-EMPTY IS A PROCESS CHANGE, NOT A
+MISCOUNT, and it is reported as its own `process change` finding, printed last,
+with the per-side placement split beside it.  The reason: a revision that moved
+two parts to the front face got
+
+    F.Paste is declared empty but defines 3 aperture(s)
+
+as one of four failures, between "expected 38 holes, got 45" and "placements
+top: expected 13, got 15" — in the same tone.  Two of those four were
+bookkeeping; that one meant **the board now needs a second stencil and a second
+reflow pass**, the single most consequential fact in the whole revision for
+whoever builds it.  Every one of the four was fixed by the same gesture (edit
+the number), which is exactly the gesture that lets a process change through
+unremarked.
+
+`became_populated` is the acknowledgement: it says a human has read the process
+change and accepted it, so the export passes — loudly, still printing what
+changed and what it costs — instead of failing.  Removing the layer from
+`expect_empty_layers` also passes, and says nothing.  Prefer the acknowledgement
+for one revision, then clean both up.
 """
 
 import argparse
@@ -407,9 +440,22 @@ def placement_rows(path):
     return max(0, len(rows) - 1)                 # minus the header row
 
 
+def paste_side(layer):
+    """'top' / 'bottom' for a paste layer, else None."""
+    if not layer.endswith(".Paste"):
+        return None
+    return "bottom" if layer.startswith("B.") else "top"
+
+
 def check(outdir, name, layers, assertions):
-    """Assert the export is sane. Returns (failures, notes) as string lists."""
-    fails, notes = [], []
+    """Assert the export is sane.
+
+    Returns (failures, notes, changes) as string lists.  `changes` is the
+    process-change bucket: a paste layer that has crossed between empty and
+    non-empty means a stencil and a reflow pass have been added or removed, and
+    reporting that as one more count mismatch is how it gets edited away.
+    """
+    fails, notes, changes = [], [], []
     expected = ["-%s.gbr" % l.replace(".", "_") for l in layers]
     expected += REQUIRED_SUFFIXES
     expected += assertions.get("extra_files", [])
@@ -487,7 +533,24 @@ def check(outdir, name, layers, assertions):
     # Emptiness by aperture count, not bytes.  A declared empty-layer set is
     # exhaustive: that is what makes a *newly* empty layer a failure instead of
     # a silence.
-    declared = list(assertions.get("expect_empty_layers") or [])
+    # A declared layer is either a bare name or {"layer": ..., "because": ...}:
+    # an assertion that carries the reason it exists is the difference between
+    # a number to edit and a decision to re-make.
+    declared, because = [], {}
+    for entry in (assertions.get("expect_empty_layers") or []):
+        if isinstance(entry, dict):
+            layer = entry.get("layer")
+            if not layer:
+                fails.append("expect_empty_layers entry %r has no \"layer\""
+                             % entry)
+                continue
+            declared.append(layer)
+            if entry.get("because"):
+                because[layer] = " ".join(str(entry["because"]).split())
+        else:
+            declared.append(entry)
+    acknowledged = set(assertions.get("became_populated") or [])
+
     counts = {}
     for layer in layers:
         path = os.path.join(outdir, "%s-%s.gbr" % (name, layer.replace(".", "_")))
@@ -498,21 +561,54 @@ def check(outdir, name, layers, assertions):
         if layer not in counts:
             fails.append("expect_empty_layers names %s, which this export "
                          "does not plot" % layer)
-        elif counts[layer] != 0:
+            continue
+        if counts[layer] == 0:
+            continue
+        side = paste_side(layer)
+        if side is None:
             fails.append("%s is declared empty but defines %d aperture(s)"
                          % (layer, counts[layer]))
+            continue
+        # The process change.  Routed to its own bucket whether or not it was
+        # acknowledged: acknowledging it decides the exit status, never whether
+        # it is said out loud.
+        line = ("%s was declared EMPTY and now defines %d aperture(s) — this "
+                "board needs a %s-side stencil and a %s-side reflow pass it "
+                "did not need before" % (layer, counts[layer], side, side))
+        if layer in because:
+            line += "\n            it was empty because: %s" % because[layer]
+        if layer not in acknowledged:
+            # One short line in the failure list; the detail lives in the
+            # process-change section, so the two are not printed twice.
+            fails.append("%s: PROCESS CHANGE, not a count to edit — see below. "
+                         "Acknowledge it by\n      adding %r to "
+                         "\"became_populated\" in the profile, or drop it from "
+                         "expect_empty_layers\n      once the new process is "
+                         "the intended one." % (layer, layer))
+        else:
+            line += "\n            acknowledged in the profile "
+            line += "(\"became_populated\")."
+        changes.append(line)
     for layer, got in sorted(counts.items()):
         if got or layer in declared:
             continue
         line = ("%s plots no apertures (%d bytes of header only)"
                 % (layer, os.path.getsize(os.path.join(
                     outdir, "%s-%s.gbr" % (name, layer.replace(".", "_"))))))
+        # The change in the other direction: a paste layer that has BECOME
+        # empty is one stencil and one reflow pass fewer, which is just as much
+        # a process change and just as easy to read as a plotting failure.
+        side = paste_side(layer)
+        if side is not None and declared:
+            changes.append("%s is now EMPTY — no %s-side stencil and no "
+                           "%s-side reflow pass is needed any more; every SMD "
+                           "part is on the other face" % (layer, side, side))
         if declared:
             fails.append(line + " and is not in expect_empty_layers")
         else:
             notes.append(line + " — declare it in expect_empty_layers if "
                                 "that is intended")
-    return fails, notes
+    return fails, notes, changes
 
 
 # ------------------------------------------------------------------- manifest
@@ -560,7 +656,7 @@ def gate_verdict(project_dir, pcb):
 
 
 def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
-                   profile, bom_stats, fails, notes, cli):
+                   profile, bom_stats, fails, notes, cli, changes=()):
     """Stamp the provenance of this export into the output directory."""
     lines = ["# %s — fab package manifest" % name,
              "# Written by hw_forge scripts/kicad_fab.py. A directory of "
@@ -598,6 +694,15 @@ def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
         lines.append("  FAIL       %s" % line)
     for line in notes:
         lines.append("  note       %s" % line)
+    # In the manifest as its own heading, not folded in with the assertions: a
+    # build reading this file back later needs to know the assembly process
+    # changed, and that is not the same class of fact as a count that moved.
+    if changes:
+        lines.append("")
+        lines.append("PROCESS CHANGE — this package is not assembled the way "
+                     "the previous one was:")
+        for line in changes:
+            lines.append("  %s" % line.replace("\n            ", "\n    "))
     lines.append("")
     lines.append("This manifest is NOT a substitute for running "
                  "scripts/kicad_gate.py.")
@@ -665,7 +770,7 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
                                             os.path.basename(zip_path)))
 
     assertions = profile.get("assert") or {}
-    fails, notes = check(outdir, name, layers, assertions)
+    fails, notes, changes = check(outdir, name, layers, assertions)
 
     # Reported, never failed: a footprint on one face with all its copper on
     # the other is correct and standard (a hotswap socket: switch in from the
@@ -682,7 +787,7 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
 
     write_manifest(os.path.join(outdir, name + "-manifest.txt"), project_dir,
                    name, sch, pcb, layers, profile_path, profile,
-                   (lines, placements), fails, notes, cli)
+                   (lines, placements), fails, notes, cli, changes)
 
     files = [f for f in sorted(os.listdir(outdir))
              if os.path.isfile(os.path.join(outdir, f))]
@@ -694,6 +799,19 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
         print("  FAILED (%d):" % len(fails))
         for line in fails:
             print("    %s" % line)
+    # LAST, and after the failures deliberately: a process change is the one
+    # finding here that changes what the assembler does, and the per-side split
+    # is printed beside it because that is the number that explains it.  It is
+    # the last thing on screen whether the export passed or failed.
+    if changes:
+        print("  PROCESS CHANGE (%d) — answer this before exporting again: "
+              "did the number of\n  reflow passes change?" % len(changes))
+        for line in changes:
+            print("    %s" % line)
+        if None not in (top, bot):
+            print("    per-side placement split now: %d top, %d bottom"
+                  % (top, bot))
+    if fails:
         return len(fails)
     print("  ok      %d files, %.0f KiB -> %s%s"
           % (len(files), total / 1024.0, outdir,

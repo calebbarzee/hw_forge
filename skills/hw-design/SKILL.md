@@ -38,7 +38,7 @@ reported.
 | 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry |
 | 2 | **Logical design** | resolved part list | agent (or you, if small) | `design.py` imports clean under **both** system Python and the CAD Python; every net, pin map and topology fact derives from it |
 | 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0 — there is no board yet and a missing one is skipped, not failed); power-design decision record written |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity**, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`) |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity ENFORCED** (the flag is not enough — the five parity checks ship at *warning* and `--severity-error` filters them out; `kicad_gate.py` must print `parity enforced`, not `parity UNENFORCED`), 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`) |
 | 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders eyeballed |
 | 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything green | agent + you | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
@@ -98,6 +98,20 @@ PROJECT/
 `design.py`. Phase 1 writes its tables there rather than into a scout-local
 generator, or two copies exist and can drift — which is the failure the
 one-table doctrine exists to prevent.
+
+**ONE library directory and ONE model directory per project, at a FIXED depth
+relative to every board variant.** `kicad/lib/` and `kicad/lib/3dmodels/` above:
+every board project sits exactly one level below them (`kicad/` for a
+single-board project, `kicad/<variant>/` otherwise). A variant at any other
+depth breaks every `${KIPRJMOD}`-anchored path in the shared library, and that
+is not fixable inside a footprint: `${KIPRJMOD}/../lib/3dmodels/x.step` resolves
+for a project at `kicad/` and lands one level off for one at `kicad/proto/`;
+there is no `${KIFPMOD}`-style anchor relative to the footprint library (which
+is where a shared model store logically hangs); and KiCad's own path variables
+are **user-global**, i.e. exactly what a portable repo cannot use. So the
+layout *is* the fix — and `preflight.py --project` resolves every `(model ...)`
+link in the project's library, so a violation is a failing check rather than an
+empty 3D view three phases later.
 
 ### Phase 0 in more detail
 
@@ -187,6 +201,39 @@ same wall hoping for a different result. Both failure modes are violations:
 A rejected-on-evidence decision is legitimate *only* when it went through this
 path and got recorded. Keep the record: the reasoning is the reason the same
 question does not get reopened next session.
+
+**The REGRESSION note — the third outcome.** BARRIER covers *impossible*; the
+deviation report covers *one locked decision bent*. Neither covers the case that
+actually happens most: **two locked decisions, each individually satisfiable,
+that jointly cost you a property you already had.** Nothing fails, nothing is
+bent, no gate objects — and the phase's real output is a set of numbers a human
+has to accept, whose only channel is a final report, which is prose.
+
+```
+REGRESSION
+Lost:           the property that no longer holds, and what had established it
+Decisions:      the two or more locked decisions whose INTERACTION lost it
+Numbers:        what it costs, measured
+To get it back: which decision would have to move, and what that costs
+```
+
+Cite: one revision's display placement and encoder position were each
+satisfiable, and together (a) put the display body over the USB-C receptacle in
+plan, reintroducing a z clearance the *previous* revision had eliminated, (b)
+moved the encoder shaft 10.75 mm off its nominal x, and (c) hung the display
+glass 0.600 mm past the board edge. None failed a gate. None was a barrier —
+one decision explicitly permitted a reported deviation and the overhang was
+pre-authorised.
+
+Two obligations follow, and they are the whole point:
+
+- **You write the regression note back into the decisions doc**, under the
+  decisions it names, so the next revision's agent reads it as a constraint
+  instead of rediscovering it. A report nobody folds back into `SPEC.md` is a
+  finding with a half-life of one session.
+- **If the lost property was recorded as a KB win, the card gets amended too**
+  (`kb/README.md`, harvest rule 7). Otherwise the card keeps advising the thing
+  the design just stopped doing.
 
 ## Knowledge base protocol
 

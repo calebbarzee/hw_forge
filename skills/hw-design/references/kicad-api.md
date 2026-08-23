@@ -29,6 +29,16 @@ kicad-cli pcb drc --schematic-parity --severity-error --format json \
 
 - `--exit-code-violations` returns **5** when violations exist → DRC/ERC become tests, usable directly in a Makefile.
 - `--schematic-parity` is **not** the default and is the flag that catches the whole class of "board and schematic drifted": missing footprints, net mismatches, stale pad numbering. A DRC run without it is not a gate.
+- **AND THE FLAG ALONE IS NOT A GATE EITHER.** KiCad ships **all five** parity checks at `warning` severity — a default `.kicad_pro` has `missing_footprint`, `extra_footprint`, `net_conflict`, `footprint_symbol_mismatch` and `lib_footprint_mismatch` all at `warning` — so `--severity-error` filters every one of them out before they are counted, and the run prints a `parity` section of length zero. Measured, on a board with a revised schematic and a stale board file (7 new diodes, a 6-terminal encoder, five reallocated GPIOs, the old nets gone):
+
+  ```
+  kicad_gate.py kicad          ->  ERC ok   DRC ok   parity ok   unconnected ok   (exit 0)
+  same board, --severity-all   ->  31 schematic parity issues
+                                   21 net_conflict, 8 missing_footprint,
+                                   2 footprint_symbol_mismatch
+  ```
+
+  A green gate on a board missing eight parts and mis-wiring twenty-one nets. This is not a project misconfiguration — it was every project that had not promoted the five by hand, and an audit of a second, older project found the same blind spot hiding two genuinely missing components on its proto slice. **Promote all five to `error` in the project file** (`kicad_scaffold.py` writes them as defaults; they are the pipeline's own contract with itself, not a fab capability limit) and have the gate **assert** the promotion before trusting a parity pass — `kicad_gate.py` prints `parity UNENFORCED` and, with `--strict-parity`, fails. Demote one only as an explicit, justified decision, like any other severity override. The general rule: **a check whose severity is below the severity you filter on is not a check.**
 - `--severity-error` is the gate; run `--severity-all` separately to enumerate warnings and *document each surviving one*. A clean run only means something if the benign classes are written down.
 - The JSON report has three independent buckets — `violations`, `unconnected_items`, `schematic_parity` — plus per-item `severity`. **Read all three**; a board can be DRC-clean and still have unconnected nets.
 - Gate the *whole* set per project: `ERC 0 / DRC 0 at error severity with parity / unconnected 0`.
@@ -139,6 +149,8 @@ Keep the patch table small and every entry commented with its justification — 
 - **Pad connection: solid (`ZONE_CONNECTION_FULL`), not thermal**, for generated boards. Thermal relief buys hand-soldering comfort and costs a `starved_thermal` error on any pad whose spokes land in a small island. Reflow and through-hole into a 1 oz pour do not need it.
 - `SetMinThickness()` is a real failure mode: a pour pinched below its own minimum thickness by nearby copper silently splits into isolated islands, again **with no clearance violation** — nothing was too close to anything. When taps go unconnected and DRC is otherwise clean, suspect a pinch, not a clearance.
 
+  **There is nothing upstream of DRC for this, and there should be.** The generator knows every track, via and pad it emitted and the zone outline, so the check is available at generation time: flood the zone polygon minus (copper ⊕ clearance) on a `min_thickness`-sized grid, count components, and compare against the number of distinct pad groups. That is the difference between "read the JSON and think" and "the generator told you which lane to move". Measured, on a first fully-routed board: **one** `unconnected_items`, a ~300 mm² GND island fenced in by two band lanes and two column buses, whose escape route was a 1.10 mm window with a 0.6 mm via keepout in the middle of it — **0.075 mm** of pourable channel against a 0.20 mm minimum. The lane arithmetic that prevents it is in `electronics.md` §7 (`2 × zone_clearance + min_thickness` between fencing lanes; a via between them needs `via_r + zone_clearance` more than a track does). The island-count-and-narrowest-channel checker is on the hw_forge backlog; until it lands, gate `unconnected` on every regeneration and treat any lane extension along an existing bus as a pour change (§7).
+
 ### Custom rules
 Fab-justified relaxations go in a generated `<project>.kicad_dru` written by the same `patch_project()` step, one rule with its justification in a comment. Do not relax a global minimum to fix a local geometry problem.
 
@@ -194,3 +206,9 @@ Corollary rules:
 - Geometry helpers must be **index-based** off that table, so a renumbering changes no routing code.
 - When a vendor ships two variants of a part with **different pin order under the same family name**, a project-local symbol paired with a project-local footprint from one table is the only safe construction. Pairing a stock symbol with a variant footprint swaps nets silently and DRC-clean. (See `kb/keyboards/sk6812mini-e.md` for the canonical instance.)
 - Carry the electrical type per pin in the same table so ERC is meaningful (`power_in`, `power_out`, `input`, `bidirectional`).
+- **When BOTH halves are stock, the rule cannot be followed — so assert the pairing instead.** A stock symbol paired with a stock footprint generates nothing, so there is no single table to generate from, and the reasoning behind the rule ("a hand-paired symbol and footprint will eventually disagree") still applies in full. The answer is an assertion in the project's library builder:
+  - the footprint's **pad set equals** the symbol's pin set;
+  - every pad has a net in the design's own pin-net table;
+  - and — the one that catches the actual trap — **for any part whose labels are known non-portable, assert by PHYSICAL POSITION, never by letter.** Cite: a rotary encoder whose KB card says in bold that the letter on the common terminal is not portable between footprint authors, only its physical position (the middle of the 3-pad row) is. So the assertion is *"the middle pad of the x=0 three-pad row is the one the design grounds"*. It passes, and it would have caught a swap.
+
+  Same doctrine, one sentence longer, and it covers the two families where this keeps happening: **connectors and encoders.**
