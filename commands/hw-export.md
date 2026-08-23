@@ -95,3 +95,21 @@ will ask about (layer count, minimum track and clearance, any non-default rule
 the board relies on). If the board carries a **relaxed design rule**, name it
 here: a custom rule is something the fab's own minimum has to be checked against,
 and it should never be a surprise found at order time.
+
+## 6. "Did the geometry actually change?" — proving old gerbers still valid
+
+When a board was regenerated for a non-geometric reason (rule changes, doc
+edits, generator refactors) and the user asks whether an already-exported
+gerber set is still good, do not answer from the diff of the `.kicad_pcb` —
+regeneration reshuffles footprint order and UUIDs, so the board file *always*
+diffs. And do not diff the gerbers as text either: aperture D-codes and draw
+order also change between identical plots. Instead:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/gerber_diff.py" OLD_FAB_DIR FRESH_EXPORT_DIR
+```
+
+It resolves apertures and drill tools to their shapes and compares the sorted
+multiset of draw operations per file; exit 0 means every layer and drill file
+is geometrically identical and the old upload zip remains exactly what the
+gate validated.

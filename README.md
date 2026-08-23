@@ -14,6 +14,48 @@ headlessly, with no GUI step anywhere, alongside a printed case that passes 65
 numeric interference checks. Everything below traces back to how that run
 actually worked.
 
+## Quick start
+
+Ten minutes from clone to a gated board. From a Claude Code session:
+
+```
+/plugin marketplace add /path/to/hw_forge
+/plugin install hw-forge
+/hw-preflight
+```
+
+Preflight is the whole first step: it finds your KiCad, checks the version, and
+proves the specific operations the pipeline needs (headless `pcbnew`, zone fill,
+CLI exports) actually work on your machine. If it fails it hands you the exact
+fix command — do that and re-run it. Green preflight, then pick your path:
+
+**You already have a KiCad project** (yours or anyone's):
+
+```
+/hw-validate path/to/project
+```
+
+You get one line per board — ERC, DRC with schematic parity, unconnected — and
+an explicit pass/fail. If it fails, the command triages the violations for you:
+grouped by cause, not listed by count. This is the fastest way to *feel* what
+the pipeline is: the gate is a test suite for copper.
+
+**You want a new board**: just describe it —
+
+> design me a 6-key macro pad on a nice!nano with a nice!view display
+
+The `hw-design` skill picks it up and walks the eight phases (spec lock →
+research → logical design → schematic → PCB → fab outputs → enclosure → docs),
+gating each one before the next opens. Expect it to lock decisions with you up
+front and then work in long autonomous stretches; it stops when a gate or a
+locked decision genuinely needs you.
+
+What success looks like: a repository that **regenerates** its own board files
+(`make && make check` from scratch), reports ERC 0 / DRC 0 / parity 0 /
+unconnected 0, and exports a fab zip whose hole and placement counts are
+asserted, not eyeballed. If any of that surprises you, read the next section —
+it is the point.
+
 ## The philosophy
 
 **Everything is code-generated.** One logical design file — nets, pin tables,

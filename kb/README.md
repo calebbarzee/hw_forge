@@ -92,6 +92,7 @@ At the **end of every run**, harvest:
 ```
 kb/
 ├── README.md                  this file
+├── fabs/                      per-fab capability floors and their KiCad DRC encodings
 ├── keyboards/                 the keyboard domain (parts, firmware, geometry, libraries)
 └── projects/                  per-project pointer cards: what it is, gate state, where its docs live
 ```

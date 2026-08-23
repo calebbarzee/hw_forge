@@ -1,7 +1,7 @@
 ---
 domain: keyboards/libraries
-tags: [kicad-libraries, footprints, symbols, corne, foostan, scottokeebs, keyswitches-pretty, vendoring, provenance]
-source: local filesystem survey, 2026-08-22; z_board v0.4 (CLEANUP.md, kicad/NOTES.md)
+tags: [kicad-libraries, footprints, symbols, corne, foostan, scottokeebs, keyswitches-pretty, ergogen, ceoloide, nice-view, zmk-source, gitlink, vendoring, provenance]
+source: local filesystem survey, 2026-08-22; z_board v0.4 (CLEANUP.md, kicad/NOTES.md); hexpad resource-scout run, 2026-08-22
 date: 2026-08-22
 confidence: verified-in-cad
 ---
@@ -61,11 +61,60 @@ The hotswap library — **KiCad ships no hotswap socket footprint at all**.
 turns the MX switch 180° between faces and takes its light aperture with it. For an
 x-mirror reversible cell, generate your own — see `mx-switch-geometry.md`.
 
+## 4. Ergogen footprint repos — a fourth location this card previously missed
+
+**This section corrects a gap.** The three libraries above are all KiCad-native vendor
+libraries; they are not the only place keyboard footprints live on this machine.
+`z_board/ergogen/footprints/` is a checkout of `github.com/ceoloide/ergogen-footprints`
+(pinned commit `48935f54`) and contains, among others, `display_nice_view.js` — a
+parameterized, actively-maintained **nice!view** footprint generator (reversible,
+3D-model-aware, with trace generation) that a prior pass of this card asserted did not
+exist locally anywhere. It was found only because a hexpad resource-scout run grepped the
+whole `keyboard/` tree for `*nice*view*` instead of trusting this card's prior negative.
+**Lesson: when a card records "not found locally," it must name exactly what was searched
+(paths, patterns) so a future search can tell whether the negative still holds** — a bare
+"no footprint was observed" invites re-trusting a search that was narrower than it looked.
+Ergogen `.pretty`-equivalent repos (`ergogen/footprints/`, or a project's own
+`ergogen/output/footprints/`) are a **fourth location** to check, alongside the three
+KiCad-native libraries above, whenever surveying for a display/connector/exotic part.
+
+**Trap — bare gitlink, no `.gitmodules`.** `z_board/ergogen/footprints` is a git submodule
+entry (`git ls-files -s` shows mode `160000`) with **no `.gitmodules` file** in the parent
+repo. `z_board/CLEANUP.md` already flagged this as unresolved ("UNSURE... kept in place").
+This is exactly the "asset already lost to everyone but this machine" trap: on a fresh
+clone of `z_board`, `ergogen/footprints/` is an **empty directory**, and this only works on
+the original machine because it was cloned by hand and never committed as a proper
+submodule. **Vendor the specific files you need out of it** (copy, don't re-link) the
+moment you use anything from there — a hexpad run copied `display_nice_view.js` into
+`hexpad/lib/reference/` for exactly this reason. Do not assume this gitlink will resolve
+for anyone else, including a future session on a fresh checkout of z_board itself.
+
+**License note**: `display_nice_view.js` is CC-BY-NC-SA-4.0 (Marco Massarelli, with
+ceoloide/nidhishs improvements) — non-commercial, share-alike. A project vendoring it
+verbatim as a reference/evidence file is fine; adopting its generated geometry as
+production output on a board sold commercially is not, without checking the license again.
+
+## 5. A local ZMK firmware checkout also lives on this machine
+
+`/Users/calebbarzee/1_projects/dev/keyboard/zmk/` is a full checkout of ZMK (git remote
+`https://github.com/calebbarzee/zmk`, a fork) with a real commit checked out — not a
+bare gitlink. It contains the same `app/boards/shields/nice_view*` trees documented in
+`nice-view-display.md`, and per this project's own "local machine first, always" doctrine,
+**this should be searched before any GitHub fetch** for ZMK shield/devicetree/Kconfig
+facts. A hexpad run fetched from `github.com/zmkfirmware/zmk` first and only found this
+local checkout afterward — the checkout was slightly behind upstream (missing two lines
+added to `nice_view.overlay` since its pinned commit), which is itself a useful data point
+(pin the exact commit checked, and re-diff against upstream when trusting an old local
+clone for anything that changes over time, like display timing parameters).
+
 ## Doctrine: vendor into the project library, then upgrade
 
-1. **Search all three libraries before authoring anything.** Hand-authored geometry is the
-   most expensive and least trustworthy artifact in the pipeline; the phase-1 exit gate is
-   *every part resolves, zero hand-authored geometry*.
+1. **Search all four locations before authoring anything** — the three KiCad-native
+   libraries above, **and** any local ergogen footprint checkout (§4) and firmware source
+   checkout (§5), which cover display/connector/exotic parts and devicetree facts the
+   KiCad libraries never will. Hand-authored geometry is the most expensive and least
+   trustworthy artifact in the pipeline; the phase-1 exit gate is *every part resolves,
+   zero hand-authored geometry*.
 2. **Copy the part into a project-local library** (`lib/<project>.kicad_sym`,
    `lib/<project>_kbd.pretty/`) rather than referencing the vendor path. Project
    `sym-lib-table` / `fp-lib-table` point at `${KIPRJMOD}/../lib/`, so a project resolves

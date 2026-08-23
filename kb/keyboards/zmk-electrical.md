@@ -1,6 +1,6 @@
 ---
 domain: keyboards/zmk
-tags: [zmk, ext-power, underglow, spi3, pinctrl, devicetree, overlay, brightness-cap, split-ble, nrf52840]
+tags: [zmk, ext-power, underglow, spi3, pinctrl, devicetree, overlay, brightness-cap, split-ble, nrf52840, diode-direction, col2row, kscan]
 source: z_board v0.4 (kicad/POWER.md, kicad/NOTES.md, README.md) + ZMK hardware design guide
 date: 2026-08-22
 confidence: researched
@@ -74,6 +74,13 @@ power doc, not just in the firmware repo.
   count is not the same devicetree — note it prominently in the assembly doc.
 - Matrix wiring on nRF: per-key diodes plus ZMK's internal pulls mean **no series resistors
   on rows/columns** — GPIOs are drive-limited and the diodes block reverse paths.
+- **`diode-direction` must be stated explicitly, and the ZMK default is the unusual one.**
+  `zmk,kscan-gpio-matrix` defaults to `row2col`; the common keyboard wiring (column →
+  switch → diode anode, cathode → row) is **col2row**. Omit the property on col2row
+  hardware and the matrix scans nothing — no error, just a dead keyboard. The diode
+  direction is fixed in copper during the schematic phase, so record the required
+  devicetree value in the assembly doc at that point, not at firmware time (z_board
+  combo audit, 2026-08-22: hardware unambiguously col2row, value stated nowhere).
 
 ## Needs verification
 

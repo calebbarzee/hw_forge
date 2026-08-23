@@ -1,17 +1,23 @@
 ---
 domain: keyboards/display
-tags: [nice-view, sharp-memory-lcd, spi, display, nice-nano, zmk-display, macro-pad, dry-run]
-source: general knowledge, no vendor doc consulted; staged for the hw_forge dry-run project
+tags: [nice-view, sharp-memory-lcd, ls011b7dh03, spi, spi0, display, nice-nano, zmk-display, macro-pad, hexpad, dry-run, mounting, stack-height, mechanical]
+source: hexpad resource-scout run, 2026-08-22 — nicekeyboards.com/docs/nice-view, zmkfirmware/zmk (app/boards/shields/nice_view*), ceoloide/ergogen-footprints (commit 48935f54), HookyQR/nice_view_pcb (commit f09725d5), this machine's nice-nano-v2.md and zmk-electrical.md cards; follow-up run, 2026-08-22 — Nice-Keyboards/nicekeyboards.com raw mdx source, typeractive.xyz (nice-view product page + no-solder-spring-headers), github.com/joric/nrfmicro wiki
 date: 2026-08-22
-confidence: needs-verification
+confidence: researched
 ---
 
-# nice!view display — staging card
+# nice!view display
 
-Written from general knowledge for the **dry-run project (6-key macro pad, nice!view on a
-nice!nano)**. **No web/vendor source was consulted.** Everything below is a starting
-hypothesis; the research pass in §3 must run before any of it is used to place a footprint
-or write a devicetree.
+Researched for the **hexpad dry-run project (6-key macro pad, nice!view on a nice!nano
+v2)** — see `hexpad/RESOURCES.md` for the full citation table and
+`hexpad/lib/gen_nice_view.py` for the generated symbol/footprint. §3's checklist is
+answered below; items still open are marked `(needs-verification)` inline. A follow-up
+pass (§2's "Mechanical" paragraph) closed the mounting-stack-height question as far as
+it can be closed with text sources — the honest answer is "no authoritative figure
+exists," not a number. Raise this card to `verified-in-cad` once a board carrying
+`DISP_nice_view` passes ERC/DRC/parity, and to `verified-in-hardware` once a populated
+hexpad unit's display actually lights up **and** its measured stack height is recorded
+here to replace the inference below.
 
 ## 1. What I can state with reasonable confidence
 
@@ -46,37 +52,127 @@ or write a devicetree.
   - low static current means the display is **not** a candidate for `ext_power` gating on
     power grounds; check whether ZMK gates it anyway.
 
-## 2. Explicitly NOT known
+## 2. Verified facts
 
-- Pin count, pin order, and pin names — including **which pin is CS** and whether the
-  header is 4 or 5 positions.
-- Physical dimensions (PCB outline, display active area, total height above the nice!nano),
-  and the socket/header pitch and position relative to the module's own pads.
-- Resolution. A figure around 160 × 68 is in my memory but is **not** to be relied on.
-- Whether the ZMK shield names are `nice_view` + `nice_view_adapter`, the exact build
-  incantation, and which `CONFIG_*` keys beyond `CONFIG_ZMK_DISPLAY` are required.
-- Which SPI instance ZMK's shield binds by default, and its pin assignments.
-- Operating voltage / current, and whether a 3.3 V rail is the only option.
-- Whether a KiCad footprint exists in any local library (see `local-libraries.md` — the
-  foostan `kbd.pretty` has an `OLED` footprint and ScottoKeebs has `OLED_128x32`/`128x64`;
-  **no nice!view footprint was observed in either**).
+**Module pin order (its own 5-pin, 2.54mm-pitch header, single row):**
+`1=MOSI 2=SCK 3=VCC 4=GND 5=CS`. Two independently-authored KiCad assets agree exactly:
+`ceoloide/ergogen-footprints` `display_nice_view.js` (commit `48935f54`) and
+`HookyQR/nice_view_pcb` `nice_view.kicad_mod`/`.kicad_sym` (commit `f09725d5`). **Caveat
+(needs-verification):** both ultimately cite the same nicekeyboards.com pinout *image* as
+their datasheet reference, and that image could not be read directly (text-only fetch
+tooling cannot OCR it) — so this is two independently-authored transcriptions agreeing,
+not confirmation against the primary image itself or a third, unrelated lineage. Treat as
+strong but not airtight.
 
-## 3. What a research pass must confirm — checklist
+**Signal → nice!nano v2 default GPIO** (this is the fact that matters for firmware/pin-map
+work, and it *is* airtight — three-way agreement): CS = D1/**P0.06**, MOSI = D2/**P0.17**,
+SCK = D3/**P0.20**. Sources: `nicekeyboards.com/docs/nice-view/pinout-schematic/` (vendor
+docs) + `zmkfirmware/zmk` `app/boards/shields/nice_view_adapter/boards/
+nice_nano_nrf52840_zmk.overlay` (`cs-gpios = <&pro_micro 1 ...>`,
+`NRF_PSEL(SPIM_MOSI, 0, 17)`, `NRF_PSEL(SPIM_SCK, 0, 20)`) — cross-checked a third time
+against this project's own `nice-nano-v2.md` D-label→port table. A fourth psel,
+`NRF_PSEL(SPIM_MISO, 0, 25)`, is asserted by the same overlay, but **P0.25 has no D-label**
+in the verified nice!nano v2 pin map — almost certainly a required-but-unconnected pin for
+the Zephyr SPIM driver binding (the display is write-only), but this was not independently
+confirmed **(needs-verification)**.
 
-1. **Pinout**: full pin list in physical order, with CS identified, from the vendor pinout
-   page **and** a second independent source (a shipping board's schematic or a community
-   library footprint). Two-source verification, per the resource-acquisition doctrine.
-2. **Mechanical**: PCB outline dimensions, header position/pitch, and total stack height
-   above the nice!nano's top face. Needed for the case z-budget and the deck window.
-3. **ZMK config**: exact shield names, the adapter's role, the full build command, required
-   `CONFIG_*` keys, and the SPI instance + pinctrl the shield expects. Read them out of the
-   ZMK tree, not from a blog post.
-4. **Electrical**: supply voltage, active and static current, and whether any series or
-   pull resistors are expected on the SPI lines.
-5. **Footprint/symbol**: find an existing footprint or generate symbol + footprint from the
-   confirmed pin table (one table, two emitters). Do **not** reuse an OLED footprint.
-6. **Pin-map interaction**: list the default pinmux of every SPI and UART instance on
-   nice!nano v2 and check them against the macro pad's key GPIOs before locking the map.
+**SPI instance**: `spi0` (SPIM0), `spi-max-frequency = <1000000>` (1MHz). Source: ZMK's
+`nice_view.overlay`. Uses `pinctrl-1 = <&spi0_sleep>` with `low-power-enable` — worth
+copying into any board overlay that reuses this SPI instance elsewhere.
 
-Raise `confidence` to `researched` once §3.1–§3.4 are done from primary sources, and to
-`verified-in-cad` once a board with the footprint passes ERC/DRC/parity.
+**Mechanical**: PCB outline **36 × 14 × 2.9mm**. Three-way agreement: vendor listing text
+(splitkb/mechboards/keeb.supply, consistent) + both vendored footprints' outline geometry
+(36×14mm each, independently). Header sits **~1.3mm from one short edge** (ceoloide:
+1.3mm; HookyQR: 1.27mm — agree to within 0.03mm), i.e. near one end, not centred. The
+2.9mm figure is read as the module's own body thickness (PCB + panel + conformal coat),
+**excluding** its mounting standoff below it — a reasoned inference, not confirmed by
+any source; no footprint carries Z data to cross-check it **(needs-verification)**.
+
+**Mounting stack height — the hexpad follow-up (still unresolved as a number, but now
+fully researched rather than merely "not found"):**
+  - The **standard kit hardware** is a plain 5-pin, 2.54mm-pitch solder header+socket
+    pair (confirmed by reading the *raw `.mdx` source* behind
+    `nicekeyboards.com/docs/nice-view/getting-started` and `.../pinout-schematic` in
+    `Nice-Keyboards/nicekeyboards.com` on GitHub — not just the rendered page). **No
+    part number or height figure exists anywhere in the official text source**; the only
+    place any dimension appears is three PNGs with zero accompanying alt text in the
+    markdown — confirmed image-only, not a fetch-tool artifact.
+  - **Real-world evidence says do not assume it clears a stacked arrangement**: a named
+    reviewer (Yash Savani) on Typeractive's nice!view product page reports, verbatim,
+    "it has to be fit press and still doesn't fit on top of the nice!nano v2s. Feels
+    like there needs to be more clearance." `researched` confidence that a genuine fit
+    problem exists in this exact scenario; not a measured shortfall.
+  - **One purpose-built aftermarket answer exists**: Typeractive's "No-Solder Spring
+    Headers," sold in two packs — "(2x) 12pin header, 5mm height, good for one
+    nice!nano" and **"(1x) 5pin header, 7mm height, good for one nice!view,"** the
+    latter marketed explicitly to "fit it right above the nice!nano without any
+    soldering." 7mm clears hexpad's required 6.30mm (1.90 socket + 1.20 nice!nano PCB +
+    3.20 USB-C shell, per this card's own verified stack figures) by 0.70mm.
+  - **That number conflicts with a second, independent source**: the
+    `github.com/joric/nrfmicro` wiki "Sockets" page describes what reads as the same
+    Typeractive product family as **5.0mm**, "short enough for the nice!view to sit
+    atop." Not resolved — may reflect a different product revision, a looser
+    paraphrase, or a different mounting topology (nice!view resting on the elevated
+    MCU's own top face rather than plugging into its own independent socket row, which
+    is hexpad's actual arrangement). **Stated as a genuine conflict, not adjudicated.**
+  - **Working assumption for a case generator**: make stack height a named parameter,
+    not a constant. Default **7.0mm** (the one purpose-built, dimensioned part), design
+    the keep-out to tolerate **6.3–8.5mm** without a hard collision, and re-measure
+    whatever part is actually purchased before trusting either cited number precisely.
+  - Separately, hexpad's own PCB phase confirmed the display's envelope sits *directly
+    over* the nice!nano (compounding z-stack at one location), closing the other half of
+    the previously-open "stacked vs. co-located" question for this project — that
+    resolution is project-specific, not a general nice!view fact, so it is not stated as
+    settled for every board using this display.
+
+**Electrical**: 3.3V, <10µA typical static current (memory-in-pixel technology), 3-wire
+SPI, Sharp LS011B7DH03 panel, 160×68px, 1.08" diagonal, ~30Hz refresh (`serial-vcom-interval
+= <33>` in the ZMK overlay ≈ 30.3Hz — numerically consistent with the vendor-stated 30Hz).
+
+**ZMK shield config**: shields are `nice_view` (the display, requires feature
+`nice_view_header`) and `nice_view_adapter` (bridges an *existing* 4-pin I2C-OLED header to
+a 5-pin `nice_view_header`, requires feature `i2c_oled`, exposes `nice_view_header`; bodges
+CS to `&pro_micro 1`/P0.06 by default — override `cs-gpios` on `&nice_view_spi` if that pin
+is taken). `CONFIG_ZMK_DISPLAY=y` is pulled in automatically by `nice_view.conf`; opting
+out of the shield's own custom status widget additionally needs
+`CONFIG_ZMK_DISPLAY_STATUS_SCREEN_BUILT_IN=y` + two `LV_FONT`/`LV_Z_FONT` keys. Build
+incantation: `-DSHIELD="<kb> nice_view"` if `<kb>` exposes `nice_view_header` natively, or
+`-DSHIELD="<kb> nice_view_adapter nice_view"` (adapter **first**) if `<kb>` only exposes an
+OLED-compatible `i2c_oled` header. **No upstream example of a shield that exposes
+`nice_view_header` directly (i.e. a genuine native 5-pin design with no adapter) was found**
+in `zmkfirmware/zmk` at time of writing — every worked example goes through the adapter.
+A board wiring nice!view to its own dedicated SPI0 pins from scratch (not retrofitting an
+OLED header) should define `&nice_view_spi` directly in its own board overlay the same way
+`nice_view_adapter`'s board-overlay does internally, without including the adapter shield
+at all — this is a reasoned inference from the verified facts above, **not itself confirmed
+against a working native example (needs-verification)**.
+
+**Footprint/symbol**: no nice!view footprint exists in the three local vendor libraries
+surveyed by `local-libraries.md` (foostan `kbd.pretty`, ScottoKeebs `ScottoKicad`,
+`keyswitches.pretty`). A workable KiCad-native pair was generated from the verified pin
+table above (not adopted from either vendored reference) — see `hexpad/lib/gen_nice_view.py`
+and `hexpad/RESOURCES.md` §2. Pad style (1.7mm/1.0mm drill, 2.54mm pitch, pad-1 rect) matches
+the nice!nano socket footprint family already proven in `nice-nano-v2.md`.
+
+## 3. Checklist status (was §3, now closed out)
+
+1. **Pinout** — done, two-source (with the caveat above). ✅
+2. **Mechanical** — outline/header-position done, three-source. Socket/mounting-standoff
+   height above the nice!view PCB was researched exhaustively in a follow-up pass and
+   **has no authoritative answer** — two community sources conflict (7mm vs. 5mm) and
+   the official kit gives no figure at all, with a named real-world report that it does
+   not reliably clear this exact stacking arrangement. This is now a closed research
+   question with an honest "unresolved, use a parameter" answer, not an open one. The
+   stacking-vs-adjacent question was resolved *for hexpad specifically* (compounds, per
+   its own PCB layout) but remains open as a general nice!view fact for other boards. ⚠️
+3. **ZMK config** — done, read from the ZMK tree (a fresh fetch + this machine's own older
+   `keyboard/zmk` checkout, which agreed except for two VCOM lines added upstream since that
+   checkout's pinned commit). Native-vs-adapter choice for a from-scratch board is inferred,
+   not confirmed against a working example. ⚠️
+4. **Electrical** — done. ✅
+5. **Footprint/symbol** — done: generated, not adopted, from the verified table. ✅
+6. **Pin-map interaction** — partially done (SPI0 claimed by the display; `zmk-electrical.md`
+   already documents SPI1's colliding defaults, P1.13/P1.11). A full enumeration of every
+   SPI/UART instance's default pinctrl against a specific board's chosen key GPIOs is
+   realistically a per-project, phase-2 task once GPIO candidates exist — flagged as
+   mis-scoped to phase 1 in this run's gap log (`hexpad/GAPS.md`). ⚠️

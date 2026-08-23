@@ -31,7 +31,10 @@ z_board's current gate numbers from the outside. If `kicad_gate.py` does not rep
 
 Halves: 101 footprints each; 421 tracks / 102 vias (left), 405 / 99 (right); zones filled
 inside the generator. Combo is clean at **every** severity, no warnings, both inner planes
-filling as a single island. Documented surviving warnings on the halves only: two
+filling as a single island — and since 2026-08-22 its DRC also carries **JLCPCB capability
+floors** (0.09 clearance and 0.15 via annular in project rules; 0.45 PTH hole-to-hole and
+0.28 PTH hole-to-copper as pad-type-conditioned `.kicad_dru` rules — see `kb/fabs/jlcpcb.md`),
+applied by `gen_combo.patch_project()`. The 2-layer halves do not carry them yet. Documented surviving warnings on the halves only: two
 deliberate `npth_inside_courtyard` per board (power switch nested under the module) and one
 `isolated_copper` sliver in the left VCC pour. Board outline **122.3 × 86.2 mm**, 2 layers
 (VCC pour F.Cu, GND pour B.Cu). Fab exports and renders generated and assertion-gated.

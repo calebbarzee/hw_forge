@@ -72,3 +72,37 @@ Order of investigation:
 If the project has no `Makefile` target for regeneration, say so — the nudge loop
 is only cheap when regeneration and validation are each one command, and adding
 those targets is worth doing before iterating.
+
+## Beyond the gate — the semantic audit
+
+The gate proves the design is **self-consistent**, not that it is **right**: a
+schematic wired to the wrong pins, with a diode convention the firmware default
+contradicts, passes ERC 0 / DRC 0 / parity 0 cleanly. When the user asks to
+validate the *conceptual* build-out (pin definitions, power delivery, chain
+order), run this second pass. It is a good sub-agent task.
+
+1. **Export the truth**: `kicad-cli sch export netlist --format kicadsexpr` —
+   what is actually connected, independent of how the schematic looks. Parse it
+   with a small script; never audit by eyeballing the schematic.
+2. **Three-way diff** every fact against the intent sources: the logical design
+   file (pin tables, net lists, chain order) and the human docs. Code says X,
+   docs say X, netlist says X — any disagreement is a finding **even when the
+   netlist is right**, because a stale doc causes the next bug. Say which source
+   is wrong.
+3. **Check by category, scripted**: pin map (every MCU pad → expected net);
+   power (every power-type pin lands on its intended rail; no power pins on
+   signal nets); chains (each intermediate link net has exactly 2 nodes — zero
+   fan-out); matrix (regenerate the expected key→row/col table from the design
+   file and diff); polarity (diode/cap pin-1-vs-pin-2 consistency across all
+   instances); no-connects (spares explicitly NC'd; no single-node named nets).
+4. **The highest-value single check**: symbol pin semantics vs footprint pad
+   numbering for every non-stock part. It is the one error class that passes
+   ERC, DRC, *and* parity while swapping power and data (the SK6812MINI vs
+   -E hazard).
+5. **Audit the firmware handoff**: anything copper fixes that a firmware
+   default could silently contradict — diode direction vs the kscan binding's
+   default, peripheral default pinmuxes vs the matrix, moved pin maps needing
+   their own devicetree.
+
+Report as a table of check → PASS/FAIL → one-line evidence. "All correct" is
+only a result when each row shows what was compared.

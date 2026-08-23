@@ -121,6 +121,11 @@ Keep the patch table small and every entry commented with its justification — 
 ### Custom rules
 Fab-justified relaxations go in a generated `<project>.kicad_dru` written by the same `patch_project()` step, one rule with its justification in a comment. Do not relax a global minimum to fix a local geometry problem.
 
+Custom rules also run the other way: **fab capability floors**. KiCad's stock DRC is looser than real fabs in places (no absolute clearance floor at all, 0.10 mm via annular vs typical 0.15, 0.25 mm hole-to-copper and hole-to-hole vs typical 0.28/0.45 for plated holes), so a default-settings pass is not proof of manufacturability. Encode `max(design floor, fab floor)` per spec — never loosen your own floors to fab minimums. Unconditional floors go in the project `rules` dict via `patch_project()`; anything that differs by pad type goes in the `.kicad_dru`, because **the project `min_hole_clearance` knob is hole-blind** — it cannot distinguish plated from unplated holes, and fabs quote them differently (applying a PTH number globally cost z_board 148 false NPTH violations). Condition on `A.Pad_Type`; vias carry no `Pad_Type`, so PTH-conditioned rules correctly skip them. Current numbers per fab live in `kb/fabs/`.
+
+### Trap: refs without a numeric suffix poison the CLI annotation check
+Every reference a generator emits must end in a digit (`SW_PWR1`, not `SW_PWR`). A digitless ref makes every `kicad-cli sch` invocation print `schematic has annotation errors` forever — masking real annotation problems — and if anyone runs Annotate in the GUI, KiCad silently renames the part (`SW_PWR` → `SW23`), breaking every generator constant and BOM note keyed on the old ref.
+
 ## 5. Reading files as text (s-expressions)
 
 Excellent for **reading**: parsing a footprint's pads out of `.kicad_pcb` is faster and more trustworthy than any GUI inspection, and it is how a pin-map audit should be done. Gotchas:
