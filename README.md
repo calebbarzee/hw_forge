@@ -7,13 +7,6 @@ every phase has to clear a machine-checkable gate before the next one starts.
 The deliverable is not a board file someone drew. It is a repository that
 regenerates the board file, plus the evidence that the result passes.
 
-hw_forge is the systemized version of a pipeline that already shipped: the
-z_board split keyboard, whose three PCBs and one four-layer reversible combo all
-came out ERC 0 / DRC 0 at error severity with schematic parity and 0 unconnected,
-headlessly, with no GUI step anywhere, alongside a printed case that passes 65
-numeric interference checks. Everything below traces back to how that run
-actually worked.
-
 ## Quick start
 
 Ten minutes from clone to a gated board. From a Claude Code session:
