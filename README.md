@@ -1,0 +1,173 @@
+# hw_forge
+
+A Claude Code plugin that turns hardware design into a gated, reproducible
+build. You describe a device; agents write the *generators* — Python that emits
+KiCad schematics and boards, and code-CAD that emits the printed enclosure — and
+every phase has to clear a machine-checkable gate before the next one starts.
+The deliverable is not a board file someone drew. It is a repository that
+regenerates the board file, plus the evidence that the result passes.
+
+hw_forge is the systemized version of a pipeline that already shipped: the
+z_board split keyboard, whose three PCBs and one four-layer reversible combo all
+came out ERC 0 / DRC 0 at error severity with schematic parity and 0 unconnected,
+headlessly, with no GUI step anywhere, alongside a printed case that passes 65
+numeric interference checks. Everything below traces back to how that run
+actually worked.
+
+## The philosophy
+
+**Everything is code-generated.** One logical design file — nets, pin tables,
+part list, topology — feeds every emitter. The schematic and the board come out
+of the same source, so they cannot drift. Symbols and footprints for
+project-local parts are generated from a single pin table for the same reason:
+on z_board, pairing a stock `SK6812MINI` symbol with an `SK6812MINI-E` footprint
+would have swapped power and data on all 22 LEDs, silently, DRC-clean. A
+generated pair cannot do that.
+
+**Every phase has a machine-checkable exit gate.** ERC 0. DRC 0 at error
+severity *with schematic parity*. 0 unconnected. Fab-output assertions on hole
+counts and placement counts. Numeric interference checks on the enclosure.
+`kicad-cli --exit-code-violations` returns 5 when anything is wrong, which is
+what makes DRC a test rather than a report — a broken board fails the build.
+
+**Agents never hand-edit CAD files.** Copper is not text you fix; tracks carry
+UUIDs, zones carry cached fills, and nothing revalidates until KiCad reopens the
+file. Disputes about geometry are settled by moving a named constant in the
+generator, regenerating, and reading the DRC JSON — never by arithmetic on paper.
+That loop took the combined board from 374 violations to 0 in eleven passes, and
+it is why the second half of a mirrored design typically lands clean on the first
+regeneration once the first half's handoff report exists.
+
+**The orchestrator re-runs every gate itself.** An agent's report that a gate
+passes is a claim, not evidence. The orchestrator runs `kicad_gate.py` between
+waves and reads the JSON. This is also how a toolchain regression gets caught
+instead of misdiagnosed: on z_board, 295 DRC violations that looked exactly like
+a geometry bug were one changed KiCad API signature, and the tell was that the
+*committed* board still passed while a fresh regeneration failed. Same rules,
+different geometry — so it was never the design.
+
+**Locked decisions are not relitigable — but they have a barrier clause.** Every
+agent prompt carries the user's locked choices verbatim, marked
+do-not-relitigate. If one of them makes a gate impossible or forces a materially
+worse design, the agent stops and returns a structured barrier report (what is
+blocked, why, options with tradeoffs, a recommendation) and the orchestrator
+relays it to the user as a question. Grinding against the barrier and silently
+deviating from it are both violations.
+
+## Two ways to use it
+
+**The full pipeline** is the `hw-design` skill. Ask for the work in plain
+language — "design me a 6-key macro pad on a nice!nano with a nice!view" — and
+the skill takes it through eight phases: spec lock, libraries and research,
+logical design, schematic, PCB, fab outputs, enclosure, then docs and knowledge
+harvest. It decides what to do inline and what to delegate, writes the agent
+prompts from verified facts rather than assumptions, runs the waves, and
+re-verifies each gate before opening the next phase. This is the mode for new
+boards and for structural changes to existing ones.
+
+**Five slash commands** are single-phase entry points over the exact same
+scripts, for when you already have a project and want one thing done:
+
+- `/hw-preflight` — environment doctor. Is the toolchain there, the right
+  version, and capable of the specific operations the pipeline needs? On failure
+  it stops and hands you the exact fix command. It does not work around a broken
+  toolchain, because working around one is how you spend a session debugging a
+  design that was never wrong.
+- `/hw-validate` — run the gate on a project and triage what fails.
+- `/hw-research` — acquire datasheets, footprint libraries and reference designs,
+  local machine first and the web second, vendored into the project with a
+  provenance manifest and pin tables verified against two independent sources.
+- `/hw-export` — regenerate fab outputs and renders, assert they are real.
+- `/hw-kb` — recall from or harvest into the knowledge base.
+
+Run `/hw-preflight` before the first design session on a new machine. The rest
+you reach for as needed.
+
+## The knowledge base, and why it compounds
+
+Hardware knowledge is mostly small, sharp, expensive facts. A KiCad API argument
+that changed meaning between versions. The pin order of one LED variant. The
+arithmetic that turns a cavity depth into a screw length. That an insert bore
+should be the insert's OD spec with at least 1.2mm of wall around it. That a
+gated LED rail is the one topology where the data line genuinely wants a series
+resistor, and that every reference board on your disk which omits one has an
+ungated rail and therefore isn't evidence.
+
+None of that is derivable, all of it is cheap to write down once, and each fact
+is worth roughly one debugging session every time it comes up again. So hw_forge
+keeps a knowledge base of markdown cards under `kb/`, organized by domain, and
+the pipeline touches it twice per run: a **recall** step at each phase start,
+which pulls the cards matching that phase's domain and tags into context before
+any design work happens, and a **harvest** step at run end, which writes down
+what this run learned — as new cards, or as updates to cards that were already
+close.
+
+The effect is that the system gets faster at each board family it has seen. The
+first keyboard teaches it MX plate geometry, hotswap socket keepouts, ZMK's
+`EXT_POWER` pin and the LED-rail reasoning. The second keyboard starts with all
+of that in hand and spends its session on what is actually new. KB roots are a
+path list, not a fixed directory: the plugin's own `kb/` plus anything on
+`HW_FORGE_KB_ROOTS` (colon-separated), so a personal or team knowledge-base repo
+plugs in without forking this one.
+
+## Install
+
+As a plugin, from a Claude Code session:
+
+```
+/plugin marketplace add /path/to/hw_forge
+/plugin install hw-forge
+```
+
+Or, while iterating on the plugin itself, symlink the skill into your user
+skills directory and get the same behaviour without the plugin machinery:
+
+```bash
+ln -s /path/to/hw_forge/skills/hw-design ~/.claude/skills/hw-design
+```
+
+The scripts and agent definitions are found relative to the skill directory
+either way. Optionally set `HW_FORGE_KB_ROOTS` to point at extra knowledge-base
+roots, and `KICAD_ROOT` if your KiCad lives somewhere the discovery logic does
+not look (it checks the platform defaults, including
+`/Applications/KiCad/KiCad.app` on macOS).
+
+You need KiCad 10 or newer, Python 3, and — for enclosure work — build123d. The
+KiCad-bundled Python interpreter is used for the operations that need `pcbnew`;
+`/hw-preflight` will tell you if any of that is missing or wrong.
+
+## Provenance
+
+The pipeline was proven on **z_board**, a 42-key wireless split ortholinear
+keyboard: two 2-layer halves plus a one-key proto slice, plus a stretch-goal
+four-layer reversible board that is *both* halves — fab it twice, populate the
+back face for the left and the front for the right. All four targets reach ERC 0,
+DRC 0 with schematic parity, 0 unconnected; the combined board is clean at every
+severity, warnings included, with both inner planes filling as a single island.
+Fab outputs are generated and asserted (hole counts, placement counts,
+non-emptiness). The case is a build123d model whose geometry is read out of the
+as-built board files rather than a spec table, with 65 numeric checks that
+include mirror-symmetry assertions and clearance from every standoff to every
+component it could foul.
+
+What hw_forge extracts is the process, the knowledge and the tools — not a
+universal generator. Board topologies differ too much for that. The per-project
+generator is the deliverable the pipeline teaches you to write; hw_forge ships
+the skeleton, the gate runner, and the accumulated traps.
+
+## Status and roadmap
+
+v0.1, in construction. The scripts, templates and knowledge cards are being
+extracted from z_board now; the reference docs that carry the KiCad, electronics,
+mechanical and battery knowledge are being written from the same source.
+
+The next milestone is the **dry run**: a fresh session designs a 6-key macro pad
+with a nice!view display on a nice!nano, using nothing but the skill. Anything it
+has to ask about or rediscover is a gap, and every gap gets folded back in — as a
+line in the skill, a knowledge card, or a fix to a script. A trivial board is the
+right test precisely because nothing about it should be hard.
+
+After that: agent-definition hardening from what the dry run exposes, plugin
+packaging, and a migration path off the SWIG `pcbnew` module onto the IPC API
+(`kicad-python`), which matters because SWIG is deprecated in KiCad 9 and removed
+in 11.
