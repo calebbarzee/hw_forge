@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
 """Numeric interference/stack-up checks for an enclosure, as a gate.
 
-The enclosure phase's exit gate.  Geometry disputes get settled by running
-numbers, not by arguing: every check prints the value it got and the value it
-needed, so a failure tells you which named constant to nudge and by how much.
+The enclosure phase's exit gate.  Geometry disputes are settled by running
+numbers: every check prints the value it got and the value it needed, so a
+failure tells you which named constant to nudge and by how much.
 
     python3 scripts/case_verify.py case/checks.py
     python3 scripts/case_verify.py case/checks.py --suite left --json
 
-RUN THIS WITH THE PYTHON YOUR CAD LIBRARY LIVES IN.  This module is pure
-stdlib, so it runs under any interpreter — but a real enclosure suite has to
-assert *valid solids* and *nothing proud of the print reference face*, and
-neither is expressible without building the geometry.  Under a system `python3`
-with no build123d those checks either vanish (a silently ungated phase) or the
-checks file dies on import.  A project venv is the normal answer:
+Run this with the python your computer-aided design (CAD) library lives in.
+This module is pure stdlib, so it runs under any interpreter.  But a real
+enclosure suite has to assert that solids are valid and that nothing stands
+proud of the print reference face, and neither is expressible without building
+the geometry.
+
+Under a system `python3` with no build123d those checks either vanish, leaving
+a silently ungated phase, or the checks file dies on import.  A project venv is
+the normal answer:
 
     case/.venv/bin/python scripts/case_verify.py case/checks.py
 
-and **register the CAD import itself as a check**, carrying its own fix
-command, so a missing dependency reports as one failing check instead of thirty
-missing ones.
+Register the CAD import itself as a check, carrying its own fix command, so a
+missing dependency reports as one failing check instead of thirty missing ones.
 
-ONE SUITE, TWO ENTRY POINTS.  The generator wants a numeric pass that runs on
+One suite, two entry points.  The generator wants a numeric pass that runs on
 every invocation before export; this script wants a file exposing `checks(v)`.
-Write them once: the *generator* owns the `checks(v)`-shaped function against
-this `Suite` API, the checks file is a three-line re-export of it, and the
-generator's `__main__` imports `case_verify.Suite` and runs the same function
-before exporting.  Two suites drift; this cannot.
+Write them once: the generator owns the `checks(v)`-shaped function against
+this `Suite` interface, the checks file is a three-line re-export of it, and
+the generator's `__main__` imports `case_verify.Suite` and runs the same
+function before exporting.  Two suites drift; this cannot.
 
     # case/checks.py
     from mycase import run_checks as checks     # noqa: F401
@@ -70,48 +72,51 @@ drift from the PCB it has to fit:
                                     "engagement": 4.0}, at_most=8.0)
 
 Coordinates are yours to choose, but pick one frame and say so in a comment.
-Board files are x east / y **south**; most CAD frames want y north.  Mixing
-them is the classic way to get a case that verifies clean and prints mirrored.
+Board files are x east / y south; most CAD frames want y north.  Mixing them is
+the classic way to get a case that verifies clean and prints mirrored.
 
-THE REVISION CONTRACT.  When a case is REBUILT against a revised board, the
-check *set* is as much an artifact as the check *result* — and a shrinking suite
-is invisible from the outside:
+The revision contract.  When a case is rebuilt against a revised board, the
+check set is as much an artifact as the check result, and a shrinking suite is
+invisible from the outside:
 
     python3 scripts/case_verify.py checks.py --dump-names rev1-names.json
     ... revise the board, rebuild the case ...
     python3 scripts/case_verify.py checks.py --baseline rev1-names.json
 
-**THE SUITE NAME IS PART OF A CHECK'S IDENTITY, so it must never carry a
-revision, a date, or a board hash.**  `compare_names()` keys identity on
-`(suite, name)`, so calling a suite `mycase (board rev 2)` — the obvious thing
-to do, since the suite is verifying that board — retires the *entire* baseline
-the moment the revision number changes.  Measured: `416 check(s) now, 239 in
-the baseline: 416 added, 239 retired`, not one of them for a geometric reason,
-and `--strict-baseline` in CI would have failed the run with 239 unexplainable
-retirements with no way to tell which one mattered.  Normalising the suite name
-recovered the real answer: 233 added, 59 retired.  Put the revision in a
-`v.section()` or in a check message, where `name_of()` blanks the number
-anyway.
+The suite name is part of a check's identity, so it must never carry a
+revision, a date, or a board hash.  `compare_names()` keys identity on
+`(suite, name)`, so calling a suite `mycase (board rev 2)` retires the entire
+baseline the moment the revision number changes.  Naming it that way is the
+obvious thing to do, since the suite is verifying that board.
 
-This script now defends itself against that: a trailing `(rev N)` /
+Measured: `416 check(s) now, 239 in the baseline: 416 added, 239 retired`, not
+one of them for a geometric reason.  `--strict-baseline` in CI would have
+failed the run with 239 unexplainable retirements and no way to tell which one
+mattered.  Normalising the suite name recovered the real answer: 233 added, 59
+retired.  Put the revision in a `v.section()` or in a check message, where
+`name_of()` blanks the number anyway.
+
+This script now defends itself against that.  A trailing `(rev N)` /
 `(board rev N)` is stripped from both sides before comparing, `--map-suite
 OLD=NEW` renames one explicitly, and a comparison whose suite-name sets are
-DISJOINT while every baseline check retires is reported as the rename it is —
+disjoint while every baseline check retires is reported as the rename it is,
 then retried blind to suite names, because that answer is nearly always the one
 you wanted.
 
 reports `added / retired / newly-failing / fixed`.  Retiring a check is often
-correct — a measured case: rev 1's tightest number was "display underside
+correct.  A measured case: rev 1's tightest number was "display underside
 clears the USB-C shell top" at 0.70 mm, and 0.00 mm at the assumption band's
 floor; rev 2 moved the display 7 mm west so the two no longer overlap in plan
-and the z clearance became geometrically moot, replaced by a plan check.  That
-is a design improvement, and from outside it is indistinguishable from quietly
-dropping the check that was hardest to pass.  So: **a retirement with a stated
-reason is knowledge; a retirement with a smaller number is a regression nobody
-can see.**  `--strict-baseline` fails the run when a check disappears, for the
-CI case where nothing should retire without a human saying why.
+and the z clearance became geometrically moot, replaced by a plan check.
 
-The check *count* is never a target.  Re-derive it; do not force the previous
+That is a design improvement, and from outside it is indistinguishable from
+quietly dropping the check that was hardest to pass.  So a retirement with a
+stated reason is knowledge, while a retirement with a smaller number is a
+regression nobody can see.  `--strict-baseline` fails the run when a check
+disappears, for the CI case where nothing should retire without a human saying
+why.
+
+The check count is never a target.  Re-derive it; do not force the previous
 number.
 """
 
@@ -128,13 +133,15 @@ import sys
 sys.dont_write_bytecode = True
 
 # Every comparison carries this slack, and it is not cosmetic.  A good design
-# lands exactly ON its own minimum — an Ø5.60 standoff around an Ø3.20 insert
+# lands exactly on its own minimum: an Ø5.60 standoff around an Ø3.20 insert
 # bore is the reference's 1.20 mm minimum wall, and in binary floating point
-# `(5.60 - 3.20) / 2 == 1.1999999999999997`, so a bare `>=` FAILS the correct
-# design.  The incentive that creates is the dangerous part: the obvious way to
-# make the red line green is to loosen the design (5.65 mm standoff) or the
-# rule (1.19 mm), and both are wrong.  1 nm of slack is far below any
-# manufacturable tolerance and removes the whole class of false failure.
+# `(5.60 - 3.20) / 2 == 1.1999999999999997`, so a bare `>=` fails the correct
+# design.
+#
+# The incentive that creates is the dangerous part: the obvious way to make the
+# red line green is to loosen the design (5.65 mm standoff) or the rule
+# (1.19 mm), and both are wrong.  1 nm of slack is far below any manufacturable
+# tolerance and removes the whole class of false failure.
 # Pass `tol=0` on a check that must be exact to the bit.
 TOL = 1e-6
 
@@ -185,15 +192,16 @@ def gap(a, b):
     """Signed clear distance between two shapes; negative = they interfere.
 
     Separated in at least one axis, this is the box-to-box distance less both
-    radii — exactly right for rect-rect, circle-rect and circle-circle.
+    radii, which is exactly right for rect-rect, circle-rect and circle-circle.
 
-    Overlapping in BOTH axes, a clamped box distance is 0 and the whole answer
+    Overlapping in both axes, a clamped box distance is 0 and the whole answer
     disappears: every interference reads as "0.000 mm", so a shape 5 mm inside
-    another is indistinguishable from one just touching it.  So the overlapping
-    case returns the **penetration depth** — the shallowest translation that
-    would separate them — as a negative number.  That is what lets an
-    interference be *asserted* (`Suite.interferes`) rather than only avoided,
-    which is what a rejected design alternative needs.
+    another is indistinguishable from one just touching it.
+
+    So the overlapping case returns the penetration depth, the shallowest
+    translation that would separate them, as a negative number.  That is what
+    lets an interference be asserted (`Suite.interferes`) rather than only
+    avoided, which is what a rejected design alternative needs.
 
     Clearance checks are unaffected: they compare against a non-negative
     minimum, so a pair that was failing still fails, with a number that now
@@ -256,8 +264,8 @@ class Suite(object):
 
         `name` is the check's stable identity for baseline comparison; when it
         is not given it is derived by replacing every number in the message
-        with `#`.  That is exactly the right split: the numbers are the volatile
-        part, the words are what the check *is*, so a check whose value moved
+        with `#`.  That is the right split: the numbers are the volatile part
+        and the words are what the check asserts, so a check whose value moved
         keeps its identity and a check that was replaced does not.
         """
         if self._skipping:
@@ -281,14 +289,14 @@ class Suite(object):
                           % (a.name, b.name, got, minimum), name)
 
     def nearest(self, a, others, minimum, tol=TOL, name=None):
-        """Clearance to the closest of many obstacles — one line, not N.
+        """Clearance to the closest of many obstacles: one line, not N.
 
         This is what keeps a check run readable when a part must clear every
         footprint on a face: the failure names the offender.
 
-        **The offender is in the MESSAGE, never in the identity.**  The winning
-        obstacle is the check's *answer*, and an identity coupled to its own
-        answer retires whenever the answer changes: "H4's boss clears every
+        The offender goes in the message, never in the identity.  The winning
+        obstacle is the check's answer, and an identity coupled to its own
+        answer retires whenever the answer changes.  "H4's boss clears every
         part on the underside" was never removed, weakened or even edited, and
         four of one revision's 48 retirements were nothing but a different part
         becoming the nearest one.  So the derived name counts the obstacles and
@@ -308,15 +316,15 @@ class Suite(object):
                           stable)
 
     def interferes(self, a, b, at_least=0.0, tol=TOL, name=None):
-        """`a` and `b` must OVERLAP, by at least `at_least` mm of depth.
+        """`a` and `b` must overlap, by at least `at_least` mm of depth.
 
-        The mirror of `clearance()`, and the only assertion shape a **rejected
-        alternative** can use: a role doc that asks for "what you modelled and
+        The mirror of `clearance()`, and the only assertion shape a rejected
+        alternative can use.  A role doc that asks for "what you modelled and
         dropped, with the reason" gets a far stronger artifact when the reason
         is an assertion, because then the rejection cannot be quietly
         un-rejected by a later revision.  (Cite: folding a connector notch into
-        a deck rectangle eats 0.475 mm of a fastener seat — asserted as an
-        interference, so nobody can "fix" the rectangle back.)
+        a deck rectangle eats 0.475 mm of a fastener seat, asserted as an
+        interference so nobody can "fix" the rectangle back.)
 
         Without this, a generator had to reach into this module's internals for
         a private `gap()` to say the one thing its role doc asked for.
@@ -330,8 +338,8 @@ class Suite(object):
         """Signed clear distance between two shapes; negative = interfering.
 
         Exported on the Suite so a generator can compute a clearance without
-        importing module internals — asserting on it is `clearance()` or
-        `interferes()`, but a *derived* number (a bay edge, a slot width) often
+        importing module internals.  Asserting on it is `clearance()` or
+        `interferes()`, but a derived number (a bay edge, a slot width) often
         needs the raw value.
         """
         return gap(a, b)
@@ -376,7 +384,7 @@ class Suite(object):
 
         `terms` is {label: mm}; negative terms subtract.  The printed line
         carries the whole sum, because a stack-up that fails is nearly always
-        one term nobody wrote down — the screw that needed to be 14mm rather
+        one term nobody wrote down.  The screw that needed to be 14mm rather
         than 8mm shows up here as the arithmetic, not as a surprise at
         assembly.
         """
@@ -403,8 +411,8 @@ class Suite(object):
     def mirrors(self, name, values, mirrored, about, tol=1e-6):
         """Assert one set of coordinates is the mirror of another about `about`.
 
-        A mirrored variant that is subtly *not* a mirror is the hardest class
-        of bug to see in a render and the cheapest to catch numerically.
+        A mirrored variant that is subtly not a mirror is very hard to see in
+        a render, and a numeric comparison catches it directly.
         """
         want = sorted(round(2 * about - v, 6) for v in values)
         got = sorted(round(v, 6) for v in mirrored)
@@ -433,7 +441,7 @@ class Suite(object):
                 for r in self.results]
 
 
-# ---------------------------------------------------------------------- CLI
+# ------------------------------------------------- command-line interface
 
 def load_checks_module(path):
     """Import a checks file by path, without requiring it to be a package."""
@@ -469,7 +477,7 @@ def run_checks(path, only=None, loud=True):
 
 
 # A trailing revision tag in a suite name: "(rev 3)", "(board rev 3.1)",
-# "(revision 2)".  Stripped from BOTH sides before comparing, because a suite
+# "(revision 2)".  Stripped from both sides before comparing, because a suite
 # named after the board it verifies is the obvious convention and it silently
 # retires the whole baseline.
 _SUITE_REV = re.compile(r"\s*[\(\[]\s*(?:board\s+)?rev(?:ision)?\.?\s*"
@@ -486,14 +494,14 @@ def compare_names(current, baseline, indent="  ", map_suite=None,
                   suite_blind=False):
     """Print added / retired / newly-failing / fixed. Returns (added, retired).
 
-    Identities are compared as a MULTISET, because a suite legitimately
-    registers the same check shape many times — one per fastener boss, one per
-    key cell — and "there are three of these now, there were four" is a real
+    Identities are compared as a multiset, because a suite legitimately
+    registers the same check shape many times (one per fastener boss, one per
+    key cell), and "there are three of these now, there were four" is a real
     answer that a set would swallow.
 
     Suite names are normalised first (`--map-suite`, then a trailing revision
     tag), and a comparison in which every baseline check retires against a
-    DISJOINT set of suite names is reported as a rename and retried blind: that
+    disjoint set of suite names is reported as a rename and retried blind: that
     pattern is never a real revision.
     """
     def key(row):
@@ -509,8 +517,9 @@ def compare_names(current, baseline, indent="  ", map_suite=None,
     ok_was = {key(r): r["ok"] for r in baseline}
 
     # The rename, caught before 239 lines of noise are printed as if they were
-    # geometry.  Retried blind rather than refused: name-only is the comparison
-    # the caller wanted, and saying so is what keeps it honest.
+    # geometry.  Retried blind rather than refused: comparing on names alone is
+    # the comparison the caller wanted, and the message says that is what
+    # happened.
     if not suite_blind and was and not (set(now) & set(was)):
         suites_now = {s for s, _ in now}
         suites_was = {s for s, _ in was}
@@ -569,7 +578,7 @@ def main():
                     help="write every check's stable identity to FILE, as the "
                          "baseline for a later revision")
     ap.add_argument("--baseline", metavar="FILE",
-                    help="compare this run's check SET against a --dump-names "
+                    help="compare this run's check set against a --dump-names "
                          "file: added / retired / newly-failing / fixed")
     ap.add_argument("--strict-baseline", action="store_true",
                     help="with --baseline, fail the run if any check present "

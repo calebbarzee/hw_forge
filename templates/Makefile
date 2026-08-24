@@ -1,45 +1,49 @@
-# <PROJECT> — KiCad-native build and validation loop.
+# <PROJECT>: KiCad-native build and validation loop.
 #
-# COPY THIS INTO YOUR PROJECT and fill in the "project configuration" block.
+# Copy this into your project and fill in the "project configuration" block.
 # Everything below that line is generic.
 #
 #   make            regenerate every target, then validate all of them
 #   make <name>     regenerate one target
-#   make erc        ERC only — THE PHASE-3 GATE (no board needed)
-#   make check      validate only, no regeneration  <- THE PHASE-4 GATE
+#   make erc        the electrical rule check (ERC) only: the phase-3 gate,
+#                   which needs no board
+#   make check      validate only, no regeneration  <- the phase-4 gate
 #   make warnings   every surviving finding, grouped by owner; rotates the
 #                   previous report aside and diffs the finding classes against
 #                   it (or against a BASELINE=, which also fails on a new one)
-#   make fab        gerbers + drill + pick-and-place + BOM + zip, per board
-#                   (depends on `check`: never export an ungated board)
+#   make fab        gerbers + drill + pick-and-place + bill of materials (BOM)
+#                   + zip, per board (depends on `check`: never export an
+#                   ungated board)
 #   make renders    3D renders and layer plots, for eyeballing
 #   make case       run the enclosure's numeric checks
 #   make determinism  prove a wipe-and-rebuild reproduces the same geometry
 #   make preflight  prove the toolchain works before designing anything
 #
-# THE CONTRACT.  `make check` is the build's exit gate, not a report:
+# The contract.  `make check` is the build's exit gate, not a report:
 # `kicad-cli pcb drc --exit-code-violations` returns 5 when anything is wrong,
-# so a failed check fails the build.  Three rules keep that meaningful:
+# so a failed check fails the build.  DRC here is KiCad's design rule check.
+# Three rules keep the gate meaningful:
 #
 #   * `make fab` plots the board exactly as `make check` gated it.  No zone
-#     refill on the way out, so the gerbers cannot differ from what DRC saw —
-#     and `fab` *depends* on `check`, because the documented ordering should
-#     not be a thing anyone can forget.
+#     refill on the way out, so the gerbers cannot differ from what the DRC
+#     saw.  `fab` also depends on `check`, so the documented ordering is not
+#     something anyone can forget.
 #   * Nothing regenerates as a side effect of checking.  `make check` on a
 #     clean tree must be reproducible and read-only.
 #   * A target with no board yet is gated on ERC alone and says so
 #     (`kicad_gate.py --sch-only`).  A partial gate that announces itself is
 #     fine; a partial gate that reads as green is not.
 #
-# THE LOOP.  Generate, read the JSON report, nudge ONE named constant in
+# The loop.  Generate, read the JSON report, nudge one named constant in
 # design.py or the generator, regenerate, re-gate.  Never settle a geometry
-# dispute with hand arithmetic — that is what the report is for.
+# dispute with hand arithmetic; the report carries the numbers.
 
 # ------------------------------------------------------- project configuration
 
-# Gate slices and test coupons: built and gated FIRST, never fabbed.  A
-# one-cell version of anything that repeats (one key, one LED, one fastener) is
-# the cheapest bug-finder in the pipeline — see SKILL.md, "Proto slice first".
+# Gate slices and test coupons: built and gated first, never fabbed.  A
+# one-cell version of anything that repeats (one key, one LED, one fastener)
+# finds the same bugs on a much smaller board.  See SKILL.md, "Proto slice
+# first".
 PROTO     := <proto>
 
 # Board variants that get fabbed.  One entry each.
@@ -49,8 +53,8 @@ BOARDS    := <board_a> <board_b>
 #<board_a>_NAME := <board_a>
 
 # Directory per target, relative to this Makefile.  Default: the target's own
-# name.  Set `.` for a SINGLE-BOARD project whose files live in this directory
-# next to the generator — that layout is normal and supported:
+# name.  Set `.` for a single-board project whose files live in this directory
+# next to the generator; that layout is normal and supported:
 #   <board_a>_DIR := .
 #<board_a>_DIR := <board_a>
 
@@ -59,17 +63,18 @@ BOARDS    := <board_a> <board_b>
 #<proto>_FLAGS   := --keys c0 --no-mcu
 #<board_b>_FLAGS := --mirror
 
-# Scaffolder flags: DRC severity overrides and any design-rule change, each
-# with a comment saying why.  A demoted rule is a design decision on the
-# record.  (You no longer need to restate hw_forge's own defaults here:
+# Scaffolder flags: design rule check severity overrides and any design-rule
+# change, each with a comment saying why.  A demoted rule is a design decision
+# on the record.  (You no longer need to restate hw_forge's own defaults here:
 # `kicad_scaffold.py` persists the whole scaffolded rule set to
 # hwforge-overrides.json, and `--repatch` restores all of it after SaveBoard.)
 SCAFFOLD  :=
 
 # Enclosure checks file, if this project has one (leave empty to skip).
 CASE_CHECKS := case/checks.py
-# The python the CAD library lives in.  case_verify.py is pure stdlib, but a
-# real suite asserts valid solids and printability, which need build123d.
+# The python the computer-aided design (CAD) library lives in.  case_verify.py
+# is pure stdlib, but a real suite asserts valid solids and printability, which
+# need build123d.
 CASE_PY   := case/.venv/bin/python
 
 # Where the hw_forge scripts live.  A plugin install is the first default; a
@@ -97,8 +102,8 @@ SCRIPTS := $(HW_FORGE)/scripts
 # The hw_forge scripts filter it themselves; direct $(CLI) calls need this.
 DENOISE := 2>&1 | grep -Ev '^Fontconfig (warning|error):|wxApp' || true
 
-# --schematic-parity is NOT optional: without it the DRC passes on a board
-# whose netlist has drifted from the schematic, which is exactly the failure a
+# --schematic-parity is not optional: without it the DRC passes on a board
+# whose netlist has drifted from the schematic, which is the failure a
 # generated board is most prone to.  --exit-code-violations is what makes this
 # a gate instead of a report.
 DRCFLAGS := --schematic-parity --severity-error --format json --exit-code-violations
@@ -125,7 +130,7 @@ $(foreach t,$(TARGETS),$(eval $(t)_AT   := $(HERE)$(patsubst ./,,$($(t)_DIR)/)))
 all: $(TARGETS) check
 
 # Run this first, every session.  A toolchain problem found mid-design gets
-# mistaken for a design problem and costs a whole session.
+# mistaken for a design problem.
 preflight:
 	@$(PY) $(SCRIPTS)/preflight.py --project $(HERE)
 
@@ -133,7 +138,7 @@ preflight:
 #
 # One target per board.  The schematic emitter runs under system python; the
 # board emitter runs under KiCad's bundled python because it imports pcbnew.
-# design.py must import cleanly under BOTH — that is why it stays pure python.
+# design.py must import cleanly under both, which is why it stays pure python.
 #
 # Order matters: schematic, then scaffold (library tables + .kicad_pro), then
 # board.  The generator's own save wipes the .kicad_pro, so it re-patches
@@ -172,29 +177,31 @@ check-$(1):
 endef
 $(foreach t,$(TARGETS),$(eval $(call CHECK_RULE,$(t))))
 
-# WARNINGS, and the question a REVISION asks.  `check` gates errors; warnings
+# Warnings, and the question a revision asks.  `check` gates errors; warnings
 # are not gated, so a warning class introduced by a revision otherwise arrives
-# in silence.  This enumerates every surviving finding grouped BY OWNER — which
-# is also the proof a severity demotion has to keep making every rev ("25/25
-# name DISP1+MCU1", see references/kicad-api.md §4) — and diffs the finding
-# classes against the previous rev's report.
+# in silence.  This enumerates every surviving finding grouped by owner, then
+# diffs the finding classes against the previous rev's report.
 #
-#   make warnings                          enumerate, and diff the PREVIOUS run
+# The grouping by owner is also the proof a severity demotion has to keep
+# making every rev ("25/25 name DISP1+MCU1", see references/kicad-api.md §4).
+#
+#   make warnings                          enumerate, and diff the previous run
 #   make warnings BASELINE=some-report.json   ...against a named baseline, and
-#                                             FAIL on any new class
+#                                             fail on any new class
 #
-# THE BASELINE IS A BUILD ARTIFACT, not something to remember.  `report.py
+# The baseline is a build artifact, not something to remember.  `report.py
 # --baseline` is exactly the right check and it used to have no input: this
 # target overwrote `drc-all-<t>.json` in place, so by the time you wanted a
 # baseline the previous rev's report was gone, and a revision ended up
-# reconstructing the previous class set out of PROSE in an as-built document.
-# So: the existing report is rotated to `drc-all-<t>.prev.json` FIRST, and the
+# reconstructing the previous class set out of prose in an as-built document.
+#
+# So the existing report is rotated to `drc-all-<t>.prev.json` first, and the
 # diff runs automatically once a previous report exists.  Commit the report if
 # you want a baseline that survives a clean checkout.
 #
-# The automatic diff does NOT pass --strict (the previous run may have been
-# mid-revision); an explicit BASELINE= does, because that is a deliberate claim
-# about a known-good rev.
+# The automatic diff does not pass --strict, because the previous run may have
+# been mid-revision.  An explicit BASELINE= does, because that is a deliberate
+# claim about a known-good rev.
 
 warnings: $(addprefix warnings-,$(TARGETS))
 
@@ -220,20 +227,21 @@ $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
 
 # ---------------------------------------------------------------- fab outputs
 #
-# One self-contained directory per board: gerbers, separate PTH/NPTH excellon
-# with map PDFs and a report, both-sides pick-and-place, BOM, the zip the fab
-# wants uploaded, and a manifest recording what was exported and what the gate
-# said about it.  Copper layer count is read from the board, so a two-layer and
-# a four-layer variant need no different invocation.
+# One self-contained directory per board: gerbers, excellon drill files split
+# into plated through-hole (PTH) and non-plated through-hole (NPTH) with map
+# PDFs and a report, both-sides pick-and-place, BOM, the zip the fab wants
+# uploaded, and a manifest recording what was exported and what the gate said
+# about it.  Copper layer count is read from the board, so a two-layer and a
+# four-layer variant need no different invocation.
 #
 # $(PROTO) is deliberately absent: a gate slice has no bezel, no mounting holes
-# and no fab package.  Say so in the profile of the board that IS fabbed.
+# and no fab package.  Say so in the profile of the board that is fabbed.
 #
 # The per-board profile JSON (optional but strongly recommended) holds the
 # assertions that catch what DRC cannot: hole diameters and counts, the
-# PER-SIDE placement split, intentionally-empty layers, minimum file sizes —
-# plus the BOM's project-specific notes.  It lives NEXT TO THE BOARD, never
-# under $(FABDIR): the export wipes its output directory and would delete it.
+# per-side placement split, intentionally-empty layers, minimum file sizes, and
+# the BOM's project-specific notes.  It lives next to the board, never under
+# $(FABDIR): the export wipes its output directory and would delete it.
 #
 # Commit the zip and the BOM; ignore the loose intermediates (see the
 # .gitignore shipped alongside this template).
@@ -277,7 +285,7 @@ $(foreach b,$(BOARDS),$(eval $(call RENDER_RULE,$(b))))
 # ------------------------------------------------------------------ enclosure
 #
 # The enclosure's gate.  The checks file must read its geometry out of the
-# BOARD FILES (scripts/kicad_geom.py), never from a spec table alone, or the
+# board files (scripts/kicad_geom.py), never from a spec table alone, or the
 # case and the PCB will drift.  Run it with the python build123d lives in.
 
 case:
@@ -291,9 +299,10 @@ endif
 # --------------------------------------------------------------------- utility
 
 # Prove regeneration is deterministic: digest, wipe, rebuild, digest, compare.
-# Boards are NOT byte-stable — pcbnew mints fresh KIIDs and reorders footprints
-# on save — so the comparison is on the canonical uuid-free form.  This is the
-# only honest form of "the generator is reproducible".
+# Boards are not byte-stable, because pcbnew mints fresh KIIDs (its per-item
+# unique identifiers) and reorders footprints on save.  So the comparison is on
+# the canonical uuid-free form, which is the only honest form of "the generator
+# is reproducible".
 BOARD_FILES := $(foreach t,$(TARGETS),$($(t)_AT)$($(t)_NAME).kicad_pcb)
 
 determinism:
@@ -308,7 +317,7 @@ determinism:
 
 # Dump what is actually on a board, when a report and your mental model
 # disagree.  Trust this over the model.  It also reports each footprint's
-# courtyard and which face its hardware really protrudes on — which is what an
+# courtyard and which face its hardware really protrudes on, which is what an
 # enclosure's obstacle ledger is made of.
 introspect:
 	@$(PY) $(SCRIPTS)/kicad_geom.py \
@@ -317,7 +326,7 @@ introspect:
 clean:
 	rm -f $(foreach t,$(TARGETS),$($(t)_AT)erc.json $($(t)_AT)drc.json)
 
-# Deliberately separate from `clean`: this deletes generated CAD files, and
+# Deliberately separate from `clean`: this deletes generated design files, and
 # `make determinism` is the only thing that should call it casually.
 scrub:
 	rm -f $(BOARD_FILES)

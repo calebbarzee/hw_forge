@@ -11,27 +11,30 @@ re-run instead of failing with an ImportError traceback.
 
 Why this is a separate tool: under KiCad 8 `ZONE_FILLER` needed the wx app
 framework and aborted the interpreter with no display, so headless builds
-shipped boards with unfilled zones — which read as unconnected copper in DRC.
-Under KiCad 10 the filler runs headlessly, so filling belongs in the build and
-`kicad_gate.py` needs no GUI pass.  Keep every net's connectivity in explicit
-copper anyway: treat zones as copper balance and thermal relief, never as the
-only path a net has, so a filler regression cannot silently break a board.
+shipped boards with unfilled zones. Those read as unconnected copper in the
+design rule check (DRC).  Under KiCad 10 the filler runs headlessly, so
+filling belongs in the build and `kicad_gate.py` needs no graphical pass.
 
-TWO TRAPS, both handled here:
+Keep every net's connectivity in explicit copper anyway: treat zones as copper
+balance and thermal relief, never as the only path a net has, so a filler
+regression cannot silently break a board.
+
+Two traps, both handled here:
 
   * `SaveBoard()` rewrites the sibling `.kicad_pro` from the board object's
     project settings, so a board built with `CreateEmptyBoard()` writes
-    pcbnew's *defaults* over the project's DRC severity overrides and design
-    rules.  This script loads an existing board, so it is not itself exposed —
-    it calls `kicad_scaffold.repatch()` after saving anyway, because it is
-    usually run right after a generator that is.  Any generator that saves a
-    from-scratch board owes the same call.
-  * Zone island removal must be **by area**, not by connectivity, on any zone
-    whose only connections are vias: KiCad does not count via connectivity
+    pcbnew's defaults over the project's DRC severity overrides and design
+    rules.  This script loads an existing board, so it is not itself exposed.
+    It calls `kicad_scaffold.repatch()` after saving anyway, because it is
+    usually run right after a generator that is exposed.  Any generator that
+    saves a from-scratch board owes the same call.
+  * Zone island removal must be by area, not by connectivity, on any zone
+    whose only connections are vias.  KiCad does not count via connectivity
     when deciding whether a filled island is connected, so the default mode
-    deletes every island that lacks a *pad* — turning a full pour into a
-    sliver around one pin and reporting everything else unconnected.
-    `--island-mode area` applies that to every zone before filling.
+    deletes every island that lacks a pad.  That turns a full pour into a
+    sliver around one pin and reports everything else unconnected.
+    `--island-mode area` applies area-based removal to every zone before
+    filling.
 """
 
 import argparse
@@ -128,7 +131,7 @@ def main():
     ap.add_argument("--island-mode", choices=("area", "keep-default"),
                     default="keep-default",
                     help="'area' forces area-based island removal on every "
-                         "zone — required for via-fed planes (see docstring)")
+                         "zone, required for via-fed planes (see docstring)")
     ap.add_argument("--min-island", type=float, default=DEFAULT_MIN_ISLAND_MM,
                     metavar="MM",
                     help="island side length for --island-mode area "

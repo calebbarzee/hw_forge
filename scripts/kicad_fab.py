@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """Export a fab package from a gated KiCad project, then assert it is sane.
 
-One self-contained directory per board: gerbers, PTH/NPTH excellon with map
-PDFs and a drill report, pick-and-place for both sides, a grouped BOM, and the
-zip a fab actually wants uploaded.
+One self-contained directory per board: gerbers, excellon drill files split
+into plated through-hole (PTH) and non-plated through-hole (NPTH) with map
+PDFs and a drill report, pick-and-place for both sides, a grouped bill of
+materials (BOM), and the zip a fab actually wants uploaded.
 
     python3 scripts/kicad_fab.py build/left -o fab/left
     python3 scripts/kicad_fab.py build/left -o fab/left \
         --profile build/left/fab-profile.json
 
-WHERE THE PROFILE LIVES — one convention, and it is not negotiable: **next to
-the board project it describes**, `<project_dir>/fab-profile.json`.  Never
-under the output directory.  This tool WIPES its output directory on every run,
-so a profile stored inside it is deleted by the very run that read it: the run
-prints `ok`, the profile is gone, and the *next* run fails with "no such
-profile" at a distance from the cause.  Verified, and now refused at startup.
+Where the profile lives: one convention, and it is not negotiable.  The
+profile sits next to the board project it describes, at
+`<project_dir>/fab-profile.json`, never under the output directory.
 
-Run this *after* `kicad_gate.py` passes and do not refill zones on the way out:
-the gerbers must be a plot of exactly the board DRC gated, or the files you
-send the fab are not the board you checked.  The export writes a
-`<name>-manifest.txt` recording the board hash, the tool versions, the
-assertion results and whatever verdict the gate left beside the project, so
-"was this zip gated?" is answerable six months later without archaeology.
+This tool wipes its output directory on every run, so a profile stored inside
+it is deleted by the very run that read it: the run prints `ok`, the profile is
+gone, and the next run fails with "no such profile" at a distance from the
+cause.  Verified, and now refused at startup.
+
+Run this after `kicad_gate.py` passes and do not refill zones on the way out.
+The gerbers must be a plot of exactly the board the design rule check (DRC)
+gated, or the files you send the fab are not the board you checked.
+
+The export writes a `<name>-manifest.txt` recording the board hash, the tool
+versions, the assertion results and whatever verdict the gate left beside the
+project, so "was this zip gated?" is answerable six months later without
+archaeology.
 
 Copper layers are read from the board file, so a two-layer and a four-layer
 board need no different invocation.
 
 The profile (optional) turns the export into a gate.  Without one, only
-non-emptiness is asserted — every expected artifact exists and has bytes.
+non-emptiness is asserted: every expected artifact exists and has bytes.
 With one, the numbers a board can get silently wrong while still passing DRC
 get checked too: hole diameters and counts, placement count, minimum file
 sizes.  It also carries the per-project BOM normalisation, because "what this
@@ -57,21 +62,22 @@ knowledge, not tool knowledge.
 tolerance because excellon rounds.  Slots are counted by their minor axis,
 which is how a fab tools them.
 
-`placements` takes either a scalar total or a **per-side split**, and the split
-is the one worth writing: the total is the one number a flip-sign error cannot
+`placements` takes either a scalar total or a per-side split, and the split is
+the one worth writing: the total is the one number a flip-sign error cannot
 change.  Flip a part to the wrong face and a 33-placement board still has 33
-placements, just 11/22 instead of 12/21 — and the export is the last chance to
-catch it before a stencil is cut.  Both `-pos-top.csv` and `-pos-bottom.csv`
+placements, just 11/22 instead of 12/21.  The export is the last chance to
+catch that before a stencil is cut.  Both `-pos-top.csv` and `-pos-bottom.csv`
 are already written; the split checks them.
 
-`expect_empty_layers` declares a layer that is *supposed* to have no apertures
-— e.g. F.Paste on a board whose every SMD part is bottom-side.  Emptiness is
-counted in aperture definitions (`%AD`), not bytes: a paste layer with nothing
-to stencil is 451 bytes of pure header, which passes any non-emptiness test and
-is indistinguishable from a layer dropped by accident.  Declaring the set also
-makes it **exhaustive** — any other aperture-free layer then fails, which is
-how a *newly* empty layer gets caught.  Declare nothing and undeclared empty
-layers are reported as notes instead.
+`expect_empty_layers` declares a layer that is supposed to have no apertures,
+for example F.Paste on a board whose every surface-mount part is bottom-side.
+Emptiness is counted in aperture definitions (`%AD`), not bytes: a paste layer
+with nothing to stencil is 451 bytes of pure header, which passes any
+non-emptiness test and is indistinguishable from a layer dropped by accident.
+
+Declaring the set also makes it exhaustive: any other aperture-free layer then
+fails, which is how a newly empty layer gets caught.  Declare nothing and
+undeclared empty layers are reported as notes instead.
 
 A declared-empty layer may also carry its reason, which is how the check stops
 being bookkeeping:
@@ -85,24 +91,24 @@ being bookkeeping:
         "became_populated": ["F.Paste"]
       }
 
-A PASTE LAYER CROSSING BETWEEN EMPTY AND NON-EMPTY IS A PROCESS CHANGE, NOT A
-MISCOUNT, and it is reported as its own `process change` finding, printed last,
-with the per-side placement split beside it.  The reason: a revision that moved
-two parts to the front face got
+A paste layer crossing between empty and non-empty is a process change, not a
+miscount, so it is reported as its own `process change` finding, printed last,
+with the per-side placement split beside it.
+
+The reason: a revision that moved two parts to the front face got
 
     F.Paste is declared empty but defines 3 aperture(s)
 
-as one of four failures, between "expected 38 holes, got 45" and "placements
-top: expected 13, got 15" — in the same tone.  Two of those four were
-bookkeeping; that one meant **the board now needs a second stencil and a second
-reflow pass**, the single most consequential fact in the whole revision for
-whoever builds it.  Every one of the four was fixed by the same gesture (edit
-the number), which is exactly the gesture that lets a process change through
-unremarked.
+as one of four failures, in the same tone as "expected 38 holes, got 45" and
+"placements top: expected 13, got 15".  Two of those four were bookkeeping.
+That one meant the board now needs a second stencil and a second reflow pass,
+which is the most consequential fact in the whole revision for whoever builds
+it.  Every one of the four was fixed by the same gesture, editing the number,
+and that gesture is what lets a process change through unremarked.
 
 `became_populated` is the acknowledgement: it says a human has read the process
-change and accepted it, so the export passes — loudly, still printing what
-changed and what it costs — instead of failing.  Removing the layer from
+change and accepted it, so the export passes instead of failing, loudly, still
+printing what changed and what it costs.  Removing the layer from
 `expect_empty_layers` also passes, and says nothing.  Prefer the acknowledgement
 for one revision, then clean both up.
 """
@@ -186,7 +192,7 @@ def copper_layers(pcb_path):
 def cli_step(cli, argv, what):
     proc = run([cli] + argv)
     if proc.returncode != 0:
-        # The *first* line, not the last: kicad-cli follows a usage error with
+        # The first line, not the last: kicad-cli follows a usage error with
         # its whole help text, so the tail is never the reason.
         lines = [l for l in ((proc.stderr or "") + "\n"
                              + (proc.stdout or "")).splitlines() if l.strip()]
@@ -233,7 +239,8 @@ def export(cli, name, sch, pcb, outdir, layers, no_x2=False):
     cli_step(cli, ["sch", "export", "bom", "-o", flat,
                    "--fields", BOM_FIELDS, "--labels", BOM_LABELS,
                    # One row per symbol: this tool does the grouping, so the
-                   # grouping rules live in the profile and not in a CLI flag.
+                   # grouping rules live in the profile, not in a command-line
+                   # flag.
                    "--group-by", "", "--sort-field", "Reference",
                    "--ref-range-delimiter", "", sch], "bom export")
     return flat
@@ -300,10 +307,10 @@ def side_column(refs, sides):
 
     `sides` maps ref -> (placement_side, pad_side).  A footprint placed on one
     face whose copper pads are all on the other is a standard keyboard
-    construction — a hotswap socket: switch in from the top, socket soldered
-    underneath — and both the pos file and the BOM would otherwise report
+    construction: a hotswap socket takes its switch in from the top and is
+    soldered underneath.  Both the pos file and the BOM would otherwise report
     `top`, agree with each other, and mislead.  So the column says where the
-    SOLDER goes and names the disagreement.
+    solder goes and names the disagreement.
     """
     faces, flipped = set(), set()
     for ref in refs:
@@ -323,8 +330,9 @@ def side_column(refs, sides):
 def make_bom(flat_csv, out_csv, bom_profile, sides=None):
     """Regroup a flat per-symbol BOM into one line per distinct part.
 
-    Grouped by (footprint, value, DNP): a footprint alone merges parts that
-    differ electrically, and a value alone merges a 0603 with an 0805.
+    Grouped by (footprint, value, DNP), where DNP is the do-not-populate flag:
+    a footprint alone merges parts that differ electrically, and a value alone
+    merges a 0603 with an 0805.
     """
     profile = bom_profile or {}
     sides = sides or {}
@@ -368,10 +376,9 @@ def make_bom(flat_csv, out_csv, bom_profile, sides=None):
     with open(out_csv, "w", newline="") as fh:
         # Header lines are prose for a human, not CSV data: through
         # csv.writer, any line containing a comma comes out quoted and its
-        # neighbours do not, and the assembler-facing document is exactly where
-        # the formatting must not look broken — the whole point of these lines
-        # is to be read before anything is placed.  Only the table gets the
-        # writer.
+        # neighbours do not.  These lines are meant to be read before anything
+        # is placed, so the formatting must not look broken.  Only the table
+        # gets the writer.
         for line in profile.get("header", []):
             fh.write(line + "\n")
         writer = csv.writer(fh)
@@ -531,7 +538,7 @@ def check(outdir, name, layers, assertions):
                          % (got, want))
 
     # Emptiness by aperture count, not bytes.  A declared empty-layer set is
-    # exhaustive: that is what makes a *newly* empty layer a failure instead of
+    # exhaustive: that is what makes a newly empty layer a failure instead of
     # a silence.
     # A declared layer is either a bare name or {"layer": ..., "because": ...}:
     # an assertion that carries the reason it exists is the difference between
@@ -595,7 +602,7 @@ def check(outdir, name, layers, assertions):
         line = ("%s plots no apertures (%d bytes of header only)"
                 % (layer, os.path.getsize(os.path.join(
                     outdir, "%s-%s.gbr" % (name, layer.replace(".", "_"))))))
-        # The change in the other direction: a paste layer that has BECOME
+        # The change in the other direction: a paste layer that has become
         # empty is one stencil and one reflow pass fewer, which is just as much
         # a process change and just as easy to read as a plotting failure.
         side = paste_side(layer)
@@ -625,11 +632,13 @@ def gate_verdict(project_dir, pcb):
     """What the gate left beside this project, as report lines.
 
     `kicad_gate.py` writes erc.json / drc.json next to the project.  Reading
-    them back is not the same thing as gating — but it is the difference
-    between a directory of gerbers that *claims* nothing and one that records
-    which report was on disk, what it said, and whether it predates the board
-    file it is supposed to describe.  A gate report older than the board is not
-    a gate of this board, and that is the check nobody remembers to do.
+    them back is not the same thing as gating.  It is the difference between a
+    directory of gerbers that claims nothing and one that records which report
+    was on disk, what it said, and whether it predates the board file it is
+    supposed to describe.
+
+    A gate report older than the board is not a gate of this board, and that is
+    the check nobody remembers to do.
     """
     lines = []
     board_mtime = os.path.getmtime(pcb) if os.path.exists(pcb) else 0
@@ -694,8 +703,8 @@ def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
         lines.append("  FAIL       %s" % line)
     for line in notes:
         lines.append("  note       %s" % line)
-    # In the manifest as its own heading, not folded in with the assertions: a
-    # build reading this file back later needs to know the assembly process
+    # In the manifest as its own heading, not folded in with the assertions:
+    # anyone reading this file back later needs to know the assembly process
     # changed, and that is not the same class of fact as a count that moved.
     if changes:
         lines.append("")
@@ -740,7 +749,7 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
     flat = export(cli, name, sch, pcb, outdir, layers, no_x2)
 
     # Read the board once: the BOM's Side column, and the "placed on one face,
-    # soldered on the other" report, are facts about the board that the CLI's
+    # soldered on the other" report, are facts about the board that kicad-cli's
     # own exports discard.
     sides, flipped = {}, []
     try:
@@ -773,11 +782,11 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
     fails, notes, changes = check(outdir, name, layers, assertions)
 
     # Reported, never failed: a footprint on one face with all its copper on
-    # the other is correct and standard (a hotswap socket: switch in from the
-    # top, socket soldered underneath).  The pos file reports the footprint's
-    # own layer, so it reads Side=top and must be soldered on the back — both
-    # files agree with each other and both mislead.  Say so here, where an
-    # assembler-facing document is being written.
+    # the other is correct and standard (a hotswap socket takes its switch in
+    # from the top and is soldered underneath).  The pos file reports the
+    # footprint's own layer, so it reads Side=top while the part must be
+    # soldered on the back; both files agree with each other and both mislead.
+    # Say so here, where an assembler-facing document is being written.
     grouped = {}
     for ref, placed, pads, lib in flipped:
         grouped.setdefault((lib, placed, pads), []).append(ref)
@@ -799,10 +808,10 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
         print("  FAILED (%d):" % len(fails))
         for line in fails:
             print("    %s" % line)
-    # LAST, and after the failures deliberately: a process change is the one
-    # finding here that changes what the assembler does, and the per-side split
-    # is printed beside it because that is the number that explains it.  It is
-    # the last thing on screen whether the export passed or failed.
+    # Printed last, after the failures, deliberately: a process change is the
+    # one finding here that changes what the assembler does, and the per-side
+    # split is printed beside it because that is the number that explains it.
+    # It is the last thing on screen whether the export passed or failed.
     if changes:
         print("  PROCESS CHANGE (%d) — answer this before exporting again: "
               "did the number of\n  reflow passes change?" % len(changes))
@@ -838,7 +847,7 @@ def main():
             raise SystemExit("error: no such profile: %s" % args.profile)
         # Refuse before doing any work: this tool wipes its output directory,
         # so a profile living inside it is destroyed by the run that reads it.
-        # The run would SUCCEED and the *next* one would fail with "no such
+        # The run would succeed and the next one would fail with "no such
         # profile", a long way from the cause.  Verified behaviour, now a
         # startup error.
         if not args.keep:

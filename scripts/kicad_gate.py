@@ -2,7 +2,7 @@
 """The gate: run ERC and DRC on a KiCad project and fail the build on any error.
 
 This is the machine-checkable exit contract for the schematic and PCB phases.
-It runs
+It runs the electrical rule check (ERC) and the design rule check (DRC):
 
     kicad-cli sch erc --severity-error --format json --exit-code-violations
     kicad-cli pcb drc --schematic-parity --severity-error --format json \
@@ -19,19 +19,21 @@ schematic, which is the failure mode a generated board is most prone to.
     python3 scripts/kicad_gate.py path/to/project_dir --sch-only
     python3 scripts/kicad_gate.py path/to/project_dir --strict-parity
 
-THE FLAG IS NOT THE GATE — parity severities are.  `--schematic-parity` is
+The flag is not the gate; the parity severities are.  `--schematic-parity` is
 necessary and, on its own, not sufficient: KiCad 10 ships all five parity
-checks at *warning* severity, so `--severity-error` filters every one of them
+checks at warning severity, so `--severity-error` filters every one of them
 out before they are counted, and this script prints `parity ok` on a board it
-never checked.  Measured: hexpad rev 3, with a rev-2 board on disk, gated green
-(`ERC ok  DRC ok  parity ok  unconnected ok`) while `--severity-all` on the
-same board reported **31** parity issues — eight missing footprints and
-twenty-one net conflicts.  z_board's four boards were audited afterwards and
-had never enforced parity either; its proto slice was hiding two real missing
-footprints behind a green gate.
+never checked.
+
+Measured on a project whose board was one revision stale: the gate reported
+green (`ERC ok  DRC ok  parity ok  unconnected ok`) while `--severity-all` on
+the same board reported 31 parity issues, eight missing footprints and
+twenty-one net conflicts.  A second project's four boards were audited
+afterwards and had never enforced parity either; one of its slices was hiding
+two real missing footprints behind a green gate.
 
 So this script reads the project's own `.kicad_pro` and reports whether the
-parity result is *enforceable*:
+parity result is enforceable:
 
     parity      enforced at error severity (5/5)   <- a parity ok means something
     parity      UNENFORCED  3 of 5 below error …   <- a parity ok means nothing
@@ -45,10 +47,10 @@ The project name is auto-discovered from the .kicad_pro / .kicad_sch /
 .kicad_pcb in the directory; --name is only needed when a directory holds more
 than one project.
 
-SCHEMATIC-ONLY PROJECTS.  At the end of a correct schematic phase there is no
-board file yet, and the phase's exit contract is "ERC 0" — so a missing board
-must not be a failing check, or the gate can never pass in the phase that names
-it.  Two ways to say so, and they print the same PARTIAL verdict:
+Schematic-only projects.  At the end of a correct schematic phase there is no
+board file yet, and the phase's exit contract is "ERC 0".  A missing board must
+therefore not be a failing check, or the gate can never pass in the phase that
+names it.  Two ways to say so, and they print the same PARTIAL verdict:
 
   * `--sch-only`   deliberate: run ERC, do not look for a board at all.
   * auto-detect    a directory with a schematic and no `.kicad_pcb` reports
@@ -57,8 +59,8 @@ it.  Two ways to say so, and they print the same PARTIAL verdict:
 Both are loud: the summary line says the gate was partial, so a green line can
 never be mistaken for a fully gated board.  Pass `--require-board` where a
 board is expected to exist (a PCB-phase gate, a fab-export precondition, CI)
-and a missing one should fail.  A missing *schematic* is always a failure, and
-a board that exists is always gated.
+and a missing one should fail.  A missing schematic is always a failure, and a
+board that exists is always gated.
 """
 
 import argparse
@@ -117,7 +119,7 @@ def parity_enforcement(project_dir, name):
     """(enforced, unenforced, pro_path) for the five schematic-parity checks.
 
     A parity check absent from `rule_severities` runs at KiCad's own default,
-    which is `warning` for all five — so "absent" and "warning" are the same
+    which is `warning` for all five.  So "absent" and "warning" are the same
     answer here, and both mean `--severity-error` never counted it.
     """
     pro = os.path.join(project_dir, name + ".kicad_pro")
@@ -144,8 +146,8 @@ def say_parity(say, project_dir, name):
 
     The `enforced` line honours --quiet (it is an ok line); the UNENFORCED
     block never does.  A warning that says the gate above it did not run is
-    not something a verbosity flag may hide — that is the whole failure this
-    check exists to prevent, one level up.
+    not something a verbosity flag may hide, because hiding it reproduces the
+    failure this check exists to detect.
     """
     enforced, unenforced, pro = parity_enforcement(project_dir, name)
     total = len(enforced) + len(unenforced)
@@ -233,14 +235,14 @@ def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
     state, detail = run_check(cli, ["pcb", "drc"], DRC_FLAGS, pcb, drc_json)
     if state in ("ok", "violations") and os.path.exists(drc_json):
         # Always print all three DRC sections from the report, pass or fail:
-        # a clean run should show *what* was checked, not just silence.
+        # a clean run should show what was checked, not just silence.
         failures += report_mod.summarise(drc_json)
     else:
         say("  %-11s %s  %s" % ("DRC", state.upper(), detail))
         failures += 1
 
-    # AFTER the DRC lines, deliberately: this qualifies the `parity` line the
-    # report just printed, and a reader has to see them together.
+    # Printed after the DRC lines, deliberately: this qualifies the `parity`
+    # line the report just printed, and a reader has to see them together.
     unenforced = say_parity(say, project_dir, name)
     if unenforced and strict_parity:
         failures += 1

@@ -2,22 +2,22 @@
 """Geometry-normalized comparison of two fab-output directories.
 
 Answers one question: did the plotted geometry change? A plain text diff
-cannot, because gerber files renumber aperture D-codes and reorder draw
-commands between otherwise-identical plots (footprint emission order and
-UUIDs differ on every regeneration), and both gerber and excellon carry
+cannot answer it. Gerber files renumber aperture D-codes and reorder draw
+commands between otherwise-identical plots, because footprint emission order
+and UUIDs differ on every regeneration. Both gerber and excellon also carry
 timestamps in their headers.
 
-Normalization: resolve every D-code to its aperture *shape signature* and
-every excellon tool number to its *diameter*, drop headers/comments, and
+Normalization: resolve every D-code to its aperture shape signature and
+every excellon tool number to its diameter, drop headers and comments, then
 compare the sorted multiset of draw operations. Identical multisets mean
-identical geometry; the files are interchangeable at the fab.
+identical geometry, so the files are interchangeable at the fab.
 
 Usage:
     gerber_diff.py OLD_DIR NEW_DIR
 
 Compares every *.gbr and *.drl present in OLD_DIR against its same-named
-counterpart in NEW_DIR. Exits 0 if all pairs match, 1 otherwise — so it can
-gate "the old upload zip is still valid" in a script.
+counterpart in NEW_DIR. Exits 0 if all pairs match and 1 otherwise, so a
+script can use it to gate "the old upload zip is still valid".
 """
 import glob
 import os

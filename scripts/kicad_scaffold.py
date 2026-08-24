@@ -2,7 +2,8 @@
 """Scaffold a KiCad project directory: library tables, .kicad_pro, DRC severities.
 
 Creates the three files a generated project needs before a generator can emit
-into it, so nothing depends on the user's global KiCad configuration:
+into it, so nothing depends on the user's global KiCad configuration.  DRC
+here is KiCad's design rule check:
 
   sym-lib-table / fp-lib-table   project-local libraries, auto-discovered from
                                  a sibling `lib/` directory (or given by flag)
@@ -15,35 +16,35 @@ into it, so nothing depends on the user's global KiCad configuration:
         --severity npth_inside_courtyard=warning
     python3 scripts/kicad_scaffold.py build/left --repatch
     python3 scripts/kicad_scaffold.py build/left --repatch \\
-        --severity npth_inside_courtyard=warning     # ADDS it to the sidecar
+        --severity npth_inside_courtyard=warning     # adds it to the sidecar
 
-EVOLVING THE OVERRIDE SET.  `--repatch` restores what the sidecar holds, so
+Evolving the override set.  `--repatch` restores what the sidecar holds, so
 adding a demotion to a project's scaffolder flags and then only ever running
 `--repatch` changes nothing: the board keeps failing DRC on a rule the project
 believes it demoted, and nothing says why.  Two fixes, both here now:
 
   * `--repatch` accepts `--severity` / `--design-rule` / `--net-class` and
-    MERGES them into the sidecar first.  Overrides are additive by nature, so
+    merges them into the sidecar first.  Overrides are additive by nature, so
     this is the same operation as scaffolding, minus the library tables.
   * `--repatch` prints what it restored, and warns when the flags it was handed
-    are *wider* than what the sidecar held — the silent case that cost the
-    confusion.
+    are wider than what the sidecar held.  That mismatch is otherwise silent.
 
-THE POST-SaveBoard RE-PATCH — read this before writing a generator.
+The post-SaveBoard re-patch: read this before writing a generator.
 
 `pcbnew.SaveBoard()` rewrites the sibling `.kicad_pro` from the board object's
-own project settings.  A board built with `CreateEmptyBoard()` — which is what
-every from-scratch generator does — carries pcbnew's *defaults*, not the file
-this script wrote, so the save silently reverts everything in it.  Measured on
-KiCad 10.0.5: a scaffolded `npth_inside_courtyard: warning` comes back as
-`error`, and `min_clearance: 0.2` comes back as `0.0`.  The DRC then fails on a
-rule the project deliberately demoted, and the board looks broken when only the
-project file is.
+own project settings.  A board built with `CreateEmptyBoard()`, which is what
+every from-scratch generator does, carries pcbnew's defaults rather than the
+file this script wrote, so the save silently reverts everything in it.
+
+Measured on KiCad 10.0.5: a scaffolded `npth_inside_courtyard: warning` comes
+back as `error`, and `min_clearance: 0.2` comes back as `0.0`.  The DRC then
+fails on a rule the project deliberately demoted, and the board looks broken
+when only the project file is.
 
 (A board obtained with `LoadBoard()` keeps the settings it loaded, so an
 edit-in-place tool is not exposed.  The from-scratch generator is.)
 
-Overrides must therefore be applied *after* the last save, not before, which
+Overrides must therefore be applied after the last save, not before, which
 means something has to remember them across the save.
 
 That something is `hwforge-overrides.json`: a sidecar pcbnew does not touch.
@@ -55,22 +56,23 @@ A generator's save path is:
 or, equivalently, `kicad_scaffold.py <dir> --repatch` as the next Makefile
 line.  `kicad_zonefill.py` already does this for you.
 
-Demote a rule only with a comment saying why the violation is intended — a
+Demote a rule only with a comment saying why the violation is intended.  A
 severity override is a design decision on the record, not a way to quiet a
 gate.
 
-SCHEMATIC PARITY IS PROMOTED BY DEFAULT — read this before demoting one.
+Schematic parity is promoted by default; read this before demoting one.
 
-KiCad 10 ships **every** schematic-parity check at `warning`, and the
-pipeline's own gate invocation is `--severity-error`, so all five are filtered
-out before anything counts them.  The measured consequence: a board missing
-eight parts and mis-wiring twenty-one nets gated green, printing `parity ok`
-(hexpad rev 3; `--severity-all` on the same board reported 31 parity issues).
-That is not a project misconfiguration — it was every hw_forge project, because
-nothing promoted them.
+KiCad 10 ships every schematic-parity check at `warning`, and the pipeline's
+own gate invocation is `--severity-error`, so all five are filtered out before
+anything counts them.  The measured consequence: a board missing eight parts
+and mis-wiring twenty-one nets gated green, printing `parity ok`, while
+`--severity-all` on that same board reported 31 parity issues.
+
+That was not one project's misconfiguration.  It was every hw_forge project,
+because nothing promoted them.
 
 So `PARITY_SEVERITIES` below is written into every scaffolded project as a
-DEFAULT.  Every other default here is a fab capability limit; these five are
+default.  Every other default here is a fab capability limit; these five are
 the pipeline's own contract with itself, and the flag alone never enforced it.
 A project that genuinely wants one relaxed demotes it explicitly
 (`--severity net_conflict=warning`), which puts the decision on the record
@@ -93,7 +95,7 @@ DEFAULT_RULES = {
     "min_through_hole_diameter": 0.3,
     "min_via_diameter": 0.45,
 }
-# The five schematic-parity checks, PROMOTED TO ERROR in every new project.
+# The five schematic-parity checks, promoted to error in every new project.
 # KiCad ships all five at `warning`; `--severity-error` (the gate) then filters
 # them out, so `--schematic-parity` cannot fail a build until these exist.  See
 # the module docstring.  Ordered as KiCad names them.
@@ -124,7 +126,7 @@ LIB_ROW = ('  (lib (name "%s")(type "KiCad")(uri "%s")(options "")'
 def discover_libs(project_dir):
     """(symbol_libs, footprint_libs) as [(name, uri)] from a sibling lib/ dir.
 
-    Looks at `<project>/lib` then `<project>/../lib` — the second is the usual
+    Looks at `<project>/lib` then `<project>/../lib`.  The second is the usual
     layout, one shared library directory serving several board variants.  URIs
     are written relative to ${KIPRJMOD} so the project stays relocatable.
     """
@@ -196,7 +198,7 @@ def merge_into_overrides(project_dir, severities=None, rules=None,
     """Add overrides to the sidecar without rewriting the library tables.
 
     Returns (overrides, added) where `added` names only the keys this call
-    introduced or changed — which is what the caller prints, because "the
+    introduced or changed.  That is what the caller prints, because "the
     sidecar already had that" and "the sidecar has it now" are different
     answers to "why is my demotion not taking effect".
     """
@@ -241,7 +243,7 @@ def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
     can call it unconditionally after SaveBoard.  Returns the list of files
     changed.
 
-    Any severities/rules passed here are merged into the sidecar FIRST, so
+    Any severities/rules passed here are merged into the sidecar first, so
     `--repatch --severity foo=warning` is how an override set grows.  Without
     that, a project that added a demotion to its scaffolder flags and only ever
     ran `--repatch` would keep failing DRC on a rule it believed it demoted.
@@ -279,8 +281,8 @@ def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
         touched.append(pro_path)
         if not quiet:
             # Print what was restored, not just how many: a demotion that is
-            # not in this list is a demotion that is not in effect, and that
-            # is the whole failure this output exists to make visible.
+            # not in this list is a demotion that is not in effect, which is
+            # what this output exists to make visible.
             sev = overrides.get("rule_severities") or {}
             rul = overrides.get("rules") or {}
             print("re-patched %s" % pro_path)
@@ -291,7 +293,7 @@ def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
             if not sev and not rul:
                 print("  (sidecar holds no severities or design rules)")
             # A sidecar written before parity was promoted restores a project
-            # whose parity gate cannot fail.  --repatch is the ONLY scaffolder
+            # whose parity gate cannot fail.  --repatch is the only scaffolder
             # call a mature generator makes, so this is where that gets seen.
             stale = sorted(r for r in PARITY_SEVERITIES if sev.get(r) != "error")
             if stale:
@@ -325,8 +327,8 @@ def project_doc(name, rules, net_class, severities):
 def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
              sym_libs=None, fp_libs=None, quiet=False):
     os.makedirs(project_dir, exist_ok=True)
-    # Parity promotions FIRST, so a project's own flags can still demote one
-    # deliberately — the override is the record of that decision.
+    # Parity promotions go first, so a project's own flags can still demote
+    # one deliberately.  The override is the record of that decision.
     merged_sev = dict(PARITY_SEVERITIES)
     merged_sev.update(severities or {})
     demoted = sorted(r for r, level in merged_sev.items()
@@ -356,13 +358,14 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
     #
     # `merged_rules`, not `rules`: the whole point of the sidecar is that
     # SaveBoard() reverts the .kicad_pro to pcbnew's defaults (min_clearance
-    # measured coming back as 0.0), so --repatch has to restore the SCAFFOLDED
+    # measured coming back as 0.0), so --repatch has to restore the scaffolded
     # state, not only the fraction of it that happened to arrive on the command
-    # line.  Persisting CLI-only rules made every project restate hw_forge's
-    # own defaults as --design-rule flags to get them back — and the failure
-    # was silent, because the net-class clearance IS persisted and governs
-    # track-to-track spacing, so a board could pass a DRC that no longer
-    # enforced the board minimum with nothing to say so.
+    # line.  Persisting only the command-line rules made every project restate
+    # hw_forge's own defaults as --design-rule flags to get them back.
+    #
+    # That failure was silent, because the net-class clearance is persisted and
+    # governs track-to-track spacing, so a board could pass a DRC that no
+    # longer enforced the board minimum with nothing to say so.
     save_overrides(project_dir, {"rule_severities": severities,
                                  "rules": merged_rules,
                                  "net_classes": [merged_net]})
@@ -419,7 +422,7 @@ def main():
             net_class[key] = float(net_class[key])
 
     if args.repatch:
-        # Flags given with --repatch are MERGED into the sidecar, so an
+        # Flags given with --repatch are merged into the sidecar, so an
         # override set can grow without a full re-scaffold.  Warning when the
         # sidecar was narrower than the flags is the point: that mismatch is
         # exactly the state in which a project's demotion silently does

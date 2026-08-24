@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Read geometry out of a .kicad_pcb without KiCad: outline, holes, placements.
 
-A dependency-free s-expression parser.  The point is to let the *enclosure*
-phase derive its numbers from the as-built board file rather than from a spec
-table that can drift: hole positions, the outline rectangle and every
-footprint's position/rotation/side come from the file DRC already gated.
-Runs under any python3, including the one your CAD library lives in, so a
-case script can `import kicad_geom` instead of transcribing coordinates.
+A dependency-free parser for KiCad's s-expression (symbolic expression) file
+format.  The point is to let the enclosure phase derive its numbers from the
+as-built board file rather than from a spec table that can drift: hole
+positions, the outline rectangle and every footprint's position, rotation and
+side come from the file the design rule check (DRC) already gated.
+
+Runs under any python3, including the one your computer-aided design (CAD)
+library lives in, so a case script can `import kicad_geom` instead of
+transcribing coordinates.
 
     python3 scripts/kicad_geom.py board.kicad_pcb
     python3 scripts/kicad_geom.py board.kicad_pcb --json | jq .outline
@@ -14,31 +17,31 @@ case script can `import kicad_geom` instead of transcribing coordinates.
     python3 scripts/kicad_geom.py --diff old.kicad_pcb new.kicad_pcb \
                                   --as-constants
 
-Coordinates are raw KiCad board coordinates: millimetres, x east, **y south**.
+Coordinates are raw KiCad board coordinates: millimetres, x east, y south.
 Enclosure code almost always wants y negated to get a right-handed frame; do
 that conversion at the boundary, once, and keep every table in board coords.
 
 Three traps this file exists to encapsulate:
 
   * Footprint rotation is stored counterclockwise-as-seen-on-screen, and file
-    coordinates are y-south, so in file coordinates the rotation is
-    **clockwise** for a positive angle.  A sign error here is invisible on 0
-    and 180 degree parts and silently wrong on every 90/270 part.
+    coordinates are y-south, so in file coordinates the rotation is clockwise
+    for a positive angle.  A sign error here is invisible on 0 and 180 degree
+    parts and silently wrong on every 90/270 part.
   * A pad's `(at ...)` is footprint-local and must be rotated by the parent
     footprint's angle before it means anything.  Absolute hole positions are
     what the case needs; the local ones are a trap for the unwary.
-  * **A footprint's `side` says where it is PLACED, not where its hardware
-    is.**  `side` is read from the footprint's `layer`, and a hotswap keyboard
-    socket is a *front*-face footprint whose pads are declared on B.Cu and
-    whose 1.85 mm of socket body plus 2.20 mm of switch pin live entirely
-    UNDER the board.  Filtering `side == "bottom"` to build an underside
-    clearance ledger therefore misses every switch cell on the board — and
-    every clearance check passes, because the ledger never contained them.
-    (Measured on a 6-key board: the underside free band read 14.96 mm that
-    way; including the sockets the real figure is 5.52 mm.)  So each footprint
-    also carries:
+  * A footprint's `side` says where it is placed, not where its hardware is.
+    `side` is read from the footprint's `layer`, and a hotswap keyboard socket
+    is a front-face footprint whose pads are declared on B.Cu and whose 1.85 mm
+    of socket body plus 2.20 mm of switch pin live entirely under the board.
 
-        pad_side    "top" / "bottom" / "both" — where its COPPER is
+    Filtering `side == "bottom"` to build an underside clearance ledger
+    therefore misses every switch cell on the board, and every clearance check
+    passes because the ledger never contained them.  (Measured on a 6-key
+    board: the underside free band read 14.96 mm that way; including the
+    sockets the real figure is 5.52 mm.)  So each footprint also carries:
+
+        pad_side    "top" / "bottom" / "both": where its copper is
         through_hole  whether any pad is drilled
         protrudes   the faces whose obstacle ledger must contain this part:
                     its own side, plus the opposite face when the pads are
@@ -47,92 +50,93 @@ Three traps this file exists to encapsulate:
 
     Build an underside ledger from `protrudes`, never from `side`.
 
-JSON KEYS PER FOOTPRINT — these are the names `--json` emits, and the printed
+JSON keys per footprint.  These are the names `--json` emits, and the printed
 table's column headings match them so a consumer never has to guess
 (`ROTATION`, not `ROT`):
 
     ref value lib layer      identity, as the file has it
-    designator               the ref PARSED: {"prefix": "DISP", "index": 1}
+    designator               the parsed ref: {"prefix": "DISP", "index": 1}
     x y rotation             placement: board coords, degrees
-    side                     the footprint's own layer — PLACEMENT ONLY
+    side                     the footprint's own layer, placement only
     pad_side through_hole
-    protrudes                where the HARDWARE is (see the trap above)
+    protrudes                where the hardware is (see the trap above)
     courtyard                F.CrtYd/B.CrtYd bbox, board coords
     pads_bbox                union of every copper pad, board coords
-    body_bbox                F.Fab/B.Fab bbox — the part BODY, board coords
+    body_bbox                F.Fab/B.Fab bbox: the part body, board coords
     fab_items                each Fab graphic separately: kind, layer, bbox
-    obstacle_above           what really stands ABOVE the board: {bbox, basis,
-    obstacle_below           courtyard_dropped} — or null where nothing does
+    obstacle_above           what really stands above the board: {bbox, basis,
+    obstacle_below           courtyard_dropped}, or null where nothing does
 
-`designator` exists because **reference designators are not a prefix-free
-code** and `ref.startswith("D")` is a trap: `D`/`DISP`, `R`/`RN`, `C`/`CN`,
+`designator` exists because reference designators are not a prefix-free code,
+which makes `ref.startswith("D")` a trap: `D`/`DISP`, `R`/`RN`, `C`/`CN`,
 `J`/`JP`.  A height ledger that dispatched on `startswith("D")` gave a nice!view
 (`DISP1`) an SOD-123 diode's height and reported 8 diodes on a 7-diode board.
 Switch on `designator["prefix"] == "D"`, never on the string.
 
 `obstacle_above` / `obstacle_below` answer the question a deck window or a
-battery bay actually asks — *what is in the way on this face* — instead of
+battery bay actually asks, which is what is in the way on this face, instead of
 leaving each project to pick between `courtyard`, `body_bbox` and their union.
 The three cases (`references/mechanical.md` §4) and the `basis` each reports:
 
     courtyard∪body   the default: a part whose hardware can exceed its own
                      courtyard (a socketed module's courtyard is drawn round
-                     its pad grid and comes out SMALLER than the part).
-    body             a THROUGH-HOLE part whose courtyard is inflated by its own
-                     pad row — flat copper and silk, nothing a deck can hit.
+                     its pad grid and comes out smaller than the part).
+    body             a through-hole part whose courtyard is inflated by its own
+                     pad row of flat copper and silk, nothing a deck can hit.
                      `courtyard_dropped` says how much was excluded, so the
                      choice is visible rather than implied.  (Measured: ENC1's
                      courtyard runs 3.0 mm further north than anything that
                      stands above the board; sizing a deck window on the union
                      left a mounting boss 0.020 mm of seat.)
-    courtyard        no Fab body to union with — the courtyard is all the file
-                     knows, and the part's body then has to come from its
+    courtyard        no Fab body to union with, so the courtyard is all the
+                     file knows, and the part's body then has to come from its
                      datasheet or KB card and be asserted.
 
 `courtyard`, `pads_bbox` and `body_bbox` are rotation-resolved, and `None` when
 the footprint carries no such geometry.
 
-An enclosure's obstacle ledger is made of courtyards — but the courtyard is
-*not* automatically the larger box.  A socketed module's courtyard is routinely
-drawn around its pad grid and comes out SMALLER than the part body, so an
-obstacle rect is `courtyard ∪ body_bbox` (see references/mechanical.md §4).
-That is why `body_bbox` is exported rather than left to a handoff table in
-prose: the Fab outline *is* the part's own body, it is right there in the file,
-and a number that has to be retyped is a number that drifts.
+An enclosure's obstacle ledger is made of courtyards, but the courtyard is not
+automatically the larger box.  A socketed module's courtyard is routinely drawn
+around its pad grid and comes out smaller than the part body, so an obstacle
+rect is `courtyard ∪ body_bbox` (see references/mechanical.md §4).
 
-`fab_items` is the same argument one step down.  A protruding actuator — a
-slide-switch knob, a button plunger, a connector shell — is usually its own
+That is why `body_bbox` is exported rather than left to a handoff table in
+prose: the Fab outline is the part's own body, it is right there in the file,
+and a number that has to be retyped can drift from the file.
+
+`fab_items` is the same argument one step down.  A protruding actuator (a
+slide-switch knob, a button plunger, a connector shell) is usually its own
 group of Fab lines, and the case has to slot exactly that.  Every item is
 reported separately, in board coordinates with the rotation already applied, so
 the caller unions the ones it means instead of writing a bespoke pcbnew script.
 
-THE ADOPTION DIFF (`--diff OLD NEW`).  A generated board's docstring says never
-to hand-edit the `.kicad_pcb`, and that is right — but dragging four footprints
-in pcbnew is the *normal* way a person says "put the encoder over here", so the
+The adoption diff (`--diff OLD NEW`).  A generated board's docstring says never
+to hand-edit the `.kicad_pcb`, and that is right.  But dragging four footprints
+in pcbnew is the normal way a person says "put the encoder over here", so the
 round trip needs a defined re-entry path rather than a prohibition.  `--diff`
-is the machine-readable half of it: per-ref Δx / Δy / Δrot / **Δside**, refs
-added and removed, and changes to the `protrudes` SETS.
+is the machine-readable half of it: per-ref Δx / Δy / Δrot / Δside, refs added
+and removed, and changes to the `protrudes` sets.
 
 Both halves of that matter, and the second is the one nothing else catches:
 
-  * **A hand placement is an `(x, y, rot, layer)` tuple and all four are the
-    spec.** A rotation adopted at 180° instead of 0° reverses which pad of a
+  * A hand placement is an `(x, y, rot, layer)` tuple and all four are the
+    spec.  A rotation adopted at 180° instead of 0° reverses which pad of a
     two-terminal part faces the net leaving it, which is a routing topology
-    change (measured cost: two vias).  A part that came back on the other
-    *face* is a bigger change than any position move.
-  * **A keepout derived from a component bound is invalidated by that
-    component LEAVING**, not only by it moving.  Two parts moving to the front
-    face took the protrude-below set from 37 refs to 35 — and they were the two
-    that bounded a battery bay, whose plan area then grew ~68 % with every
-    remaining ref still perfectly in the ledger.  A stale ledger that is merely
-    *conservative* is the failure mode nobody looks for.
+    change (measured cost: two vias).  A part that came back on the other face
+    is a bigger change than any position move.
+  * A keepout derived from a component bound is invalidated by that component
+    leaving, not only by it moving.  Two parts moving to the front face took
+    the protrude-below set from 37 refs to 35, and they were the two that
+    bounded a battery bay, whose plan area then grew ~68 % with every remaining
+    ref still perfectly in the ledger.  A stale ledger that is merely
+    conservative is the failure mode nobody looks for.
 
 `--as-constants` prints the moved set as a python dict ready to paste into an
 emitter, because transcribing eight coordinates by hand out of a JSON dump is a
 transcription risk with no checker behind it: a board generated from the wrong
 adopted coordinate is perfectly clean.  Adopt, regenerate, then run `--diff
---strict` between the backup and the regenerated board and require **no**
-differences — that last step is what makes the whole round trip safe.
+--strict` between the backup and the regenerated board and require no
+differences.  That last step is what makes the whole round trip safe.
 """
 
 import argparse
@@ -146,7 +150,7 @@ GRAPHIC_ITEMS = ("gr_rect", "gr_line", "gr_arc", "gr_circle", "gr_poly")
 FP_GRAPHIC_ITEMS = ("fp_rect", "fp_line", "fp_arc", "fp_circle", "fp_poly")
 OUTLINE_LAYER = "Edge.Cuts"
 COURTYARD_LAYERS = ("F.CrtYd", "B.CrtYd")
-# The Fab layers carry the part's own BODY outline (and often its actuator),
+# The Fab layers carry the part's own body outline (and often its actuator),
 # which is the rect the courtyard is not.
 FAB_LAYERS = ("F.Fab", "B.Fab")
 
@@ -380,14 +384,14 @@ def _pad_bbox(node, origin, angle):
             max(p[0] for p in pts), max(p[1] for p in pts)]
 
 
-# A reference designator is PREFIX + digits, and the prefixes are not a
+# A reference designator is a prefix plus digits, and the prefixes are not a
 # prefix-free code (`D`/`DISP`, `R`/`RN`, `C`/`CN`, `J`/`JP`), so the split has
 # to be parsed rather than guessed with startswith().
 _DESIGNATOR = re.compile(r"^([A-Za-z_]+?)(\d+)$")
 
 
 def designator(ref):
-    """{'prefix': 'DISP', 'index': 1} — or index None for an unparseable ref.
+    """{'prefix': 'DISP', 'index': 1}, with index None for an unparseable ref.
 
     A digitless ref is itself a defect (it poisons kicad-cli's annotation
     check, see references/kicad-api.md §4), so it is reported with the whole
@@ -406,7 +410,7 @@ PAD_COURTYARD_SLOP = 0.75
 
 
 def _obstacle_rect(courtyard, body, pads_bbox, through_hole):
-    """({bbox, basis, courtyard_dropped}) — what physically stands on a face.
+    """({bbox, basis, courtyard_dropped}): what physically stands on a face.
 
     See the module docstring for the three cases.  `courtyard_dropped` is the
     furthest the courtyard reaches past the chosen bbox, so a consumer can see
@@ -430,8 +434,8 @@ def _obstacle_rect(courtyard, body, pads_bbox, through_hole):
     over_body = excess(courtyard, body)
     dropped = round(max(over_body), 4)
     # The pad-row-inflated case: a through-hole part whose courtyard exceeds its
-    # body only where its own PADS also do.  Then the excess is flat copper and
-    # silk — nothing that stands above the board.  Both conditions are needed:
+    # body only where its own pads also do.  Then the excess is flat copper and
+    # silk, nothing that stands above the board.  Both conditions are needed:
     # the excess must be real, and the pads must account for it.  A courtyard
     # that is merely a uniform margin round the body keeps the conservative
     # union.
@@ -491,7 +495,7 @@ def _footprint(node):
         pad_type = atoms(pad)[2] if len(atoms(pad)) > 2 else ""
         if pad_type == "thru_hole":
             through = True
-        if pad_type != "np_thru_hole":               # NPTH carries no copper
+        if pad_type != "np_thru_hole":               # non-plated: no copper
             pad_layer_names.update(layers_of(pad))
             box = _pad_bbox(pad, (x, y), rot)
             if box:
@@ -572,7 +576,8 @@ def read_board(path):
         holes += fp_holes
         outline += fp_outline
 
-    # Vias are drilled and plated, so a fab's PTH tool list includes them.
+    # Vias are drilled and plated, so a fab's plated-through-hole tool list
+    # includes them.
     for via in kids(root, "via"):
         at, drill = kid(via, "at"), kid(via, "drill")
         if not (at and drill):
@@ -622,9 +627,9 @@ def fmt(value, width=0):
     """Number with up to 4 decimals, trailing zeros stripped.
 
     Deliberately not %g: %g would print 47.625 as 47.62 at 4 significant
-    figures, and a hole coordinate that reads 47.62 when the board says 47.625
-    is exactly the kind of quiet rounding the enclosure phase must never
-    inherit from this tool.
+    figures.  A hole coordinate that reads 47.62 when the board says 47.625 is
+    the kind of quiet rounding the enclosure phase must never inherit from this
+    tool.
     """
     text = ("%.4f" % value).rstrip("0").rstrip(".")
     return text.rjust(width) if width else (text or "0")
@@ -769,8 +774,8 @@ def _turn(degrees):
     """A rotation delta as the smallest equivalent turn, in (-180, 180].
 
     Rotation is modular, so a bare subtraction can report a 270 degree change
-    for a 90 degree turn — and the sign of a rotation delta is what tells you
-    which way a two-terminal part's pads swapped.
+    for a 90 degree turn.  The sign of a rotation delta is what tells you which
+    way a two-terminal part's pads swapped.
     """
     turn = round(degrees, 4) % 360.0
     return round(turn - 360.0 if turn > 180.0 else turn, 4)
@@ -780,8 +785,9 @@ def diff_boards(old, new):
     """Placement differences between two parsed boards.
 
     Keyed on ref, because that is the only stable identity a footprint has
-    across a hand edit and a regeneration (position is what changed, and the
-    KIID is minted fresh on every save — see kicad_digest.py).
+    across a hand edit and a regeneration.  Position is what changed, and the
+    KIID (KiCad's per-item unique identifier) is minted fresh on every save;
+    see kicad_digest.py.
     """
     was = {f["ref"]: f for f in old["footprints"] if f["ref"]}
     now = {f["ref"]: f for f in new["footprints"] if f["ref"]}
@@ -849,7 +855,7 @@ def print_diff(old, new, result):
         print("  ~ moved    %-10s %s" % (d["ref"], "  ".join(bits)))
 
     # The set change, not only the per-ref deltas: a keepout derived from a
-    # component bound is invalidated by that component LEAVING the face.
+    # component bound is invalidated by that component leaving the face.
     for face in ("top", "bottom"):
         p = result["protrudes"][face]
         if p["was"] == p["now"] and not p["gained"] and not p["lost"]:
@@ -926,9 +932,9 @@ def main():
                     help="with --diff, also print the moved set as a python "
                          "dict ready to paste into an emitter")
     ap.add_argument("--strict", action="store_true",
-                    help="with --diff, exit 1 if the two boards differ — the "
-                         "check that verifies a regeneration reproduced the "
-                         "placements it adopted")
+                    help="with --diff, exit 1 if the two boards differ; this "
+                         "is the check that verifies a regeneration reproduced "
+                         "the placements it adopted")
     args = ap.parse_args()
 
     if args.diff or args.as_constants:

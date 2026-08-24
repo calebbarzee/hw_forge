@@ -1,19 +1,20 @@
 """Shared KiCad toolchain discovery for the hw_forge scripts.
 
-Not a CLI: a private helper imported by preflight.py, kicad_gate.py,
-kicad_fab.py and kicad_zonefill.py so all four agree on where kicad-cli and
-KiCad's bundled python live.  Python 3 stdlib only.
+Not a command-line interface (CLI) of its own.  It is a private helper
+imported by preflight.py, kicad_gate.py, kicad_fab.py and kicad_zonefill.py, so
+that all four agree on where kicad-cli and KiCad's bundled python live.  Python
+3 stdlib only.
 
 Discovery order, for both the CLI and the bundled interpreter:
 
-  1. an explicit env override  (KICAD_CLI / KICAD_PYTHON — full paths)
+  1. an explicit env override (KICAD_CLI / KICAD_PYTHON, both full paths)
   2. KICAD_ROOT, if set, searched over the per-platform relative candidates
   3. the platform's default install root (darwin: /Applications/KiCad/...)
   4. PATH  (shutil.which)
 
 Every failure returned from here is a (value, how) pair, so callers can print
-*where* a tool came from — a preflight that says "found on PATH" when you
-expected the bundle is how a toolchain mismatch gets caught early.
+where a tool came from.  A preflight that says "found on PATH" when you
+expected the bundle is reporting a toolchain mismatch.
 """
 
 import os
@@ -43,10 +44,9 @@ DEFAULT_ROOTS = {
 }
 
 # Noise every KiCad invocation on some installs prints to stderr before its
-# real output.  Filtered everywhere so real errors stay visible — and that is
-# not cosmetic: callers report the LAST stderr line as the reason a tool
-# failed, so ~50 lines of trailing warning noise means the actual error line is
-# the one thing nobody sees.
+# real output.  Filtered everywhere so real errors stay visible.  Callers
+# report the last stderr line as the reason a tool failed, so ~50 lines of
+# trailing warning noise would leave the actual error line unseen.
 #
 #   wxApp…          the KiCad libraries expect a wxApp a headless script never
 #                   creates.
@@ -149,7 +149,7 @@ def cli_version(cli):
 
 
 def have_pcbnew(python):
-    """(ok, detail) — can `python` import pcbnew, and at what version."""
+    """(ok, detail): can `python` import pcbnew, and at what version."""
     try:
         proc = run([python, "-c",
                     "import pcbnew;print(pcbnew.GetBuildVersion())"])
@@ -164,7 +164,7 @@ def have_pcbnew(python):
 def require_pcbnew(script_name):
     """Import and return pcbnew, or exit with the exact re-run command.
 
-    Called by scripts that must run *under* the bundled interpreter.  Running
+    Called by scripts that must run under the bundled interpreter.  Running
     them under the system python is the single most common mistake, so the
     error carries the command line that fixes it rather than a traceback.
     """

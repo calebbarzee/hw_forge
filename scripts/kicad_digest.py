@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical, KIID-free digest of a KiCad file — the determinism check.
+"""Canonical digest of a KiCad file, free of KIIDs: the determinism check.
 
     python3 scripts/kicad_digest.py board.kicad_pcb [more.kicad_pcb ...]
     python3 scripts/kicad_digest.py --expect 4f0c… board.kicad_pcb
@@ -7,45 +7,50 @@
     python3 scripts/kicad_digest.py --json board.kicad_pcb
     python3 scripts/kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb
 
-WHY THIS EXISTS.  "Regeneration from wiped outputs is deterministic" is part of
-the PCB phase's contract, and the orchestrator's regression test — committed
-artifact still passes, fresh regeneration does not — depends on being able to
-say whether a rebuild changed anything.  But a generated board is **not
-byte-stable and cannot be**: `pcbnew` mints a fresh random KIID for every item
-it creates, and `SaveBoard()` writes footprints in its own internal order
-rather than insertion order.  Two runs of an *unchanged* generator have been
-measured differing in 5744 of 10488 lines while describing identical copper.
+Why this exists.  "Regeneration from wiped outputs is deterministic" is part of
+the PCB phase's contract.  The orchestrator's regression test asks whether the
+committed artifact still passes while a fresh regeneration does not, so it
+depends on being able to say whether a rebuild changed anything.
+
+But a generated board is not byte-stable and cannot be: `pcbnew` mints a fresh
+random KIID (KiCad's per-item unique identifier) for every item it creates, and
+`SaveBoard()` writes footprints in its own internal order rather than insertion
+order.  Two runs of an unchanged generator have been measured differing in 5744
+of 10488 lines while describing identical copper.
 
 So `diff` and a plain checksum report a false failure every single time, and
 without a canonical form there is no check that reports a true one.
 
 The canonical form: drop every `uuid`/`tstamp`, sort the remaining lines, hash.
 What survives is every coordinate, layer, net, width, drill, property and
-filled-zone outline — i.e. everything a fab, a DRC or an enclosure generator
-reads.  Equal digests across a wipe-and-rebuild is the strongest determinism
-claim this toolchain supports, and a real regression (a moved lane, a changed
-fill, a dropped footprint) changes the digest immediately.
+filled-zone outline, which is everything a fab, a design rule check (DRC) or an
+enclosure generator reads.
 
-What it deliberately does NOT prove: that two boards with equal digests are
-byte-identical, or that item *order* is stable.  Nothing downstream reads
-order, so nothing downstream should be gated on it.
+Equal digests across a wipe-and-rebuild is the strongest determinism claim this
+toolchain supports, and a real regression (a moved lane, a changed fill, a
+dropped footprint) changes the digest immediately.
 
-Pure stdlib under any python3 — it must run without `pcbnew`, so it works in
+What it deliberately does not prove: that two boards with equal digests are
+byte-identical, or that item order is stable.  Nothing downstream reads order,
+so nothing downstream should be gated on it.
+
+Pure stdlib under any python3.  It must run without `pcbnew`, so it works in
 the same shell as the rest of the gate.  Works on `.kicad_sch` and `.kicad_mod`
 too: the canonicalisation is textual, not board-specific.
 
-`--stamp DOC` — PROSE THAT OUTLIVED ITS BOARD.
+`--stamp DOC`: prose that outlived its board.
 
 An as-built document (an assembly doc, a fab handoff, a firmware pin list) is
-correct for exactly one revision of the board it describes, and **no gate looks
-at prose**.  Measured: a 284-line assembly document, entirely correct for rev 2,
-became actively wrong the moment a direct-pin scan became a diode matrix — its
+correct for exactly one revision of the board it describes, and no gate looks
+at prose.  Measured: a 284-line assembly document, entirely correct for rev 2,
+became actively wrong the moment a direct-pin scan became a diode matrix.  Its
 populate list had no diodes, its placement count was 33, its drill census was
 stale, and its firmware section listed a `kscan-gpio-direct` map that would
-have been copied into a real overlay.  Nothing detected that; it was caught by
-someone happening to read the file for an unrelated number.  This is not the
-stale-but-harmless kind of wrong, it is the kind that makes someone solder the
-wrong board.
+have been copied into a real overlay.
+
+Nothing detected that; it was caught by someone happening to read the file for
+an unrelated number.  This is not the stale-but-harmless kind of wrong, it is
+the kind that makes someone solder the wrong board.
 
 So stamp the document with the digest of what it describes, on one line, in a
 comment or a footer:
@@ -77,7 +82,11 @@ _UUID_INLINE = re.compile(r'\((?:uuid|tstamp) "?[^")]*"?\)')
 
 
 def canon(path):
-    """Sorted, identity-free lines of a KiCad s-expression file."""
+    """Sorted, identity-free lines of a KiCad symbolic-expression file.
+
+    KiCad stores boards and schematics as s-expressions: nested parenthesised
+    lists, one item per line at this level of detail.
+    """
     out = []
     with open(path) as fh:
         for line in fh:
@@ -160,8 +169,8 @@ def main():
                          "(a generated as-built document is correct for "
                          "exactly one revision)")
     ap.add_argument("--write", action="store_true",
-                    help="with --stamp, rewrite the stamp — the one-line act "
-                         "of saying the document has been re-read")
+                    help="with --stamp, rewrite the stamp; this is the "
+                         "one-line act of saying the document has been re-read")
     ap.add_argument("--expect", metavar="SHA1",
                     help="assert the digest equals this (exit 1 if not); with "
                          "several files, every one must match")

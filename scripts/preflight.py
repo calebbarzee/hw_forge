@@ -2,12 +2,12 @@
 """Environment doctor: prove the toolchain works before designing anything.
 
 Run this first, every session.  A toolchain problem that surfaces mid-design
-gets mistaken for a design problem and burns a whole session chasing a bug
-that was never in the board — that is exactly how KiCad 10's `Flip()` enum
-change presented (295 phantom DRC violations on a previously clean board).
+gets mistaken for a design problem.  That is how KiCad 10's `Flip()` enum
+change presented: 295 phantom violations from the design rule check (DRC) on a
+previously clean board.
+
 Checking versions up front, and diffing one throwaway regeneration against a
-known-good artifact, separates "the tools changed" from "my design is wrong"
-in seconds.
+known-good artifact, separates "the tools changed" from "my design is wrong".
 
     python3 scripts/preflight.py
     python3 scripts/preflight.py --project build/left
@@ -19,7 +19,7 @@ only when nothing failed; warnings do not fail the run.
 --smoke needs a project whose board is already known good (its gate passes).
 It re-runs the gate, then regenerates or reloads the board through pcbnew and
 re-gates it, and diffs the violation counts.  A clean board that comes back
-dirty after a round-trip is a toolchain regression, not a design error — stop
+dirty after a round-trip is a toolchain regression, not a design error, so stop
 and fix the toolchain.
 """
 
@@ -40,8 +40,10 @@ from _kicad_env import (cli_version, find_cli, find_python, have_pcbnew,
                         kicad_version_tuple, run)
 
 # KiCad 10 is the version every trap documented in this repo was measured on.
-# 9 mostly works; 8's headless zone filler does not; 11 removes the SWIG
-# pcbnew module in favour of the IPC API, so it needs a migration, not a warning.
+# 9 mostly works; 8's headless zone filler does not.  KiCad 11 removes the
+# pcbnew module built with SWIG (the Simplified Wrapper and Interface
+# Generator) in favour of the inter-process communication (IPC) API, so it
+# needs a migration rather than a warning.
 MIN_KICAD = (9, 0)
 KNOWN_GOOD_KICAD = (10, 0)
 TOO_NEW_KICAD = (11, 0)
@@ -93,7 +95,7 @@ class Report(object):
 # ------------------------------------------------------------- toolchain
 
 def check_toolchain(rep):
-    """Returns (cli, kpy) — either may be None if unusable."""
+    """Returns (cli, kpy); either may be None if unusable."""
     cli, how = find_cli()
     if not cli:
         rep.fail("kicad-cli", how,
@@ -173,7 +175,7 @@ def check_pcbnew_api(rep, kpy):
 
     if got.get("flip_tb"):
         # The trap: BOARD_ITEM.Flip() takes a FLIP_DIRECTION enum in KiCad 10,
-        # and that enum's LEFT_RIGHT member is 0 — so the KiCad 8 idiom
+        # and that enum's LEFT_RIGHT member is 0.  So the KiCad 8 idiom
         # `Flip(centre, False)` silently became a left-right mirror, which is a
         # top-bottom mirror plus 180 degrees. Every back-side footprint came
         # out rotated 180, pads swapped ends, and a clean board reported 295
@@ -311,7 +313,7 @@ def check_lib_tables(rep, directory, name):
 # be quoted or bare and may be anchored on a path variable.
 _MODEL_LINK = re.compile(r'\(model\s+"?([^"\n\)]+?)"?\s*(?:\(|$)',
                          re.MULTILINE)
-# The 3D-model path variables KiCad itself defines.  They are USER-GLOBAL,
+# The 3D-model path variables KiCad itself defines.  They are user-global,
 # which is exactly what a portable repo cannot rely on, so they are resolved
 # here against the discovered install rather than the user's KiCad config.
 _MODEL_VARS = ("KICAD10_3DMODEL_DIR", "KICAD9_3DMODEL_DIR",
@@ -340,7 +342,7 @@ def resolve_model(link, footprint_path, project_dir):
     """An absolute path for one `(model ...)` link, or None if unresolvable.
 
     `${KIPRJMOD}` is resolved against the directory holding the footprint
-    LIBRARY, not the board project: a shared library serving two board variants
+    library, not the board project: a shared library serving two board variants
     at different depths resolves differently for each, which is a real trap and
     not this checker's to fix (it is reported, below, as ambiguous).
     """
@@ -372,15 +374,16 @@ def resolve_model(link, footprint_path, project_dir):
 def check_models(rep, project_dir, kicad_dirs=None):
     """Every `(model ...)` a project's own footprints name must resolve.
 
-    A footprint NAMING a model is not evidence that the model exists.  Measured:
-    a provenance table recorded a stock model as `verified-in-cad` — "file
-    exists, path confirmed by direct filesystem check" — for a path that exists
-    in **no** KiCad install; the check had read the footprint's own `(model ...)`
-    line and recorded the *reference* as the *referent*.  That is a "the model
-    is fine" claim which becomes an empty 3D view at the exact moment (a case
-    phase, a stack-up review) the model was supposed to do work.
+    A footprint naming a model is not evidence that the model exists.
 
-    So the evidence for a model row is a `stat` of the RESOLVED path, and this
+    Measured: a provenance table recorded a stock model as `verified-in-cad`,
+    meaning "file exists, path confirmed by direct filesystem check", for a
+    path that exists in no KiCad install.  The check had read the footprint's
+    own `(model ...)` line and recorded the reference as the referent.  That is
+    a "the model is fine" claim which becomes an empty 3D view at the exact
+    moment (a case phase, a stack-up review) the model was supposed to do work.
+
+    So the evidence for a model row is a `stat` of the resolved path, and this
     is the generic version of it: resolve every link in the project's own
     library and name the ones that are not there.  It also reports footprints
     with no model link at all, which is the machine-checkable half of an
@@ -447,7 +450,7 @@ def check_generators(rep, project_dir):
     else:
         rep.ok("generators", "%d file(s) compile" % len(candidates))
 
-    # design.py must import under *both* interpreters: the schematic emitter
+    # design.py must import under both interpreters: the schematic emitter
     # runs on system python, the board emitter on KiCad's.
     designs = [p for p in candidates
                if os.path.basename(p).startswith("design")]
@@ -468,7 +471,7 @@ def check_generators(rep, project_dir):
 
 
 def check_case_env(rep, project_dir):
-    """If there is a case/, its CAD environment must be usable."""
+    """If there is a case/, its computer-aided design environment must work."""
     case_dirs = [d for d in (os.path.join(project_dir, "case"), project_dir)
                  if os.path.isdir(d) and
                  glob.glob(os.path.join(d, "*case*.py"))]
@@ -503,7 +506,7 @@ def check_case_env(rep, project_dir):
 # ----------------------------------------------------------------- smoke
 
 def violation_counts(report_path):
-    """{section: n} from a DRC/ERC JSON report."""
+    """{section: n} from a design-rule or electrical-rule JSON report."""
     with open(report_path) as fh:
         doc = json.load(fh)
     if "sheets" in doc:
@@ -517,11 +520,12 @@ def copy_lib_table(src, dst, original_dir):
     """Copy a library table, re-anchoring ${KIPRJMOD} to the original project.
 
     Library URIs are written relative to the project directory, so a plain
-    copy into a scratch dir silently breaks every one of them — and a board
-    whose footprint libraries do not resolve reports a pile of DRC violations
-    that look exactly like design errors.  That false alarm would defeat the
-    entire purpose of a smoke test, so rewrite the variable to the real path
-    instead of copying the file verbatim.
+    copy into a scratch dir silently breaks every one of them.  A board whose
+    footprint libraries do not resolve reports a pile of DRC violations that
+    look exactly like design errors.
+
+    That false alarm is the thing a smoke test exists to rule out, so rewrite
+    the variable to the real path instead of copying the file verbatim.
     """
     with open(src) as fh:
         text = fh.read()
@@ -564,9 +568,9 @@ def smoke(rep, project_dir, kicad_dirs, cli, kpy):
         # .kicad_dru is load-bearing: a project's custom DRC rules live there
         # and kicad-cli picks them up from the project directory automatically.
         # Omit it and the copy reports every violation those rules legitimately
-        # relax — 44 phantom copper_edge_clearance errors, in the case that
-        # caught this — which is precisely the false alarm a smoke test exists
-        # to rule out.
+        # relax, which is the false alarm a smoke test exists to rule out.  In
+        # the case that caught this, it was 44 phantom copper_edge_clearance
+        # errors.
         for ext in (".kicad_pcb", ".kicad_pro", ".kicad_sch", ".kicad_dru"):
             src = os.path.join(directory, name + ext)
             if os.path.exists(src):

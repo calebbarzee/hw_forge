@@ -1,54 +1,63 @@
-# Orchestration — the wave playbook
+# Orchestration: the wave playbook
 
-How to run a multi-agent hardware design without the agents fighting each other
-or lying to you by accident. This is the shape the proving run actually used;
+How to run a multi-agent hardware design so that agents do not clobber each
+other's files or report stale results. This is the shape a proving run used, and
 the failure modes named here are ones it hit.
+
+A **wave** is one dispatch of agents that run at the same time. A wave ends at a
+gate, which you re-run yourself before opening the next one.
 
 ## 1. Recon before prompts
 
 **Write no agent prompt from an assumption.** Before dispatching anything, spend
-your own turns establishing the facts the prompt will assert. Cheap, and it is
-the difference between an agent that starts working and an agent that spends its
+your own turns establishing the facts the prompt will assert. It is the
+difference between an agent that starts working and an agent that spends its
 first third rediscovering the repo.
 
 What recon means concretely:
 
-- Run the gate on the current state: `python3 scripts/kicad_gate.py PROJECT_DIR`.
-  You now know the real baseline, which is frequently not what the docs say.
-- Read the geometry out of the artifacts, not the spec:
-  `python3 scripts/kicad_geom.py BOARD.kicad_pcb --json` gives outline, hole
-  positions and footprint positions. Parsing a footprint's pads out of the board
-  file is faster and more trustworthy than any GUI inspection or spec table.
+- Run the gate on the current state:
+  `python3 scripts/kicad_gate.py PROJECT_DIR`. You now know the real baseline,
+  which is frequently not what the documentation says.
+- Read the geometry out of the artifacts rather than the spec:
+  `python3 scripts/kicad_geom.py BOARD.kicad_pcb --json` gives the outline, hole
+  positions, and footprint positions. Parsing a footprint's pads out of the
+  board file is faster and more trustworthy than any inspection in the graphical
+  editor, or any spec table.
 - Grep the generator for the named constants the agent will need to touch, and
   quote their current values in the prompt.
-- Read the decisions doc and the previous agent's handoff report.
-- Recall KB cards for the phase's domain and fold the relevant facts in.
+- Read the decisions document and the previous agent's handoff report.
+- Recall knowledge-base cards for the phase's domain, and fold the relevant
+  facts in.
 
-A prompt built this way asserts numbers. A prompt built without recon asserts
-adjectives, and the agent has to go find the numbers anyway — with less context
-than you had.
+A prompt built this way states numbers. A prompt built without recon states
+qualities, and the agent has to go and find the numbers anyway, with less
+context than you had.
 
 ## 2. Wave sequencing
 
-The only question that matters: **do these agents write the same files?**
+The question that decides everything: **do these agents write the same files?**
 
 **Sequential when they share generator files.** Two agents editing the same
-`gen_pcb.py` will clobber each other, and worse, will each gate against a tree
-the other has changed underneath them. Board variants driven by one generator are
-therefore sequential — left half, then right half — and the sequencing is not
-pure cost: the second one inherits the first one's handoff report and lands much
-faster for it.
+`gen_pcb.py` will clobber each other. Worse, each will gate against a tree the
+other has changed underneath them.
 
-**Parallel when the subtrees are disjoint.** Different directories, different
-generators, no shared constants. Fab exports for board A and board B. The
-enclosure model while documentation is being written. Research on two unrelated
-part families. Dispatch these in one message so they actually run concurrently.
+Board variants driven by one generator are therefore sequential, left half then
+right half. The sequencing is not pure cost: the second variant inherits the
+first one's handoff report and lands faster for it.
+
+**Parallel when the subtrees are disjoint.** That means different directories,
+different generators, and no shared constants. Examples: fab exports for board A
+and board B; the enclosure model while documentation is being written; research
+on two unrelated part families. Dispatch these in one message so they actually
+run concurrently.
 
 **Never parallel across a gate.** Phase N+1 does not start while phase N is
-un-re-verified, even if the files look disjoint. The whole guarantee of the
-pipeline is that each phase entered from a verified state.
+un-re-verified, even if the files look disjoint. The pipeline's whole guarantee
+is that each phase is entered from a verified state.
 
-A practical wave plan for a two-variant board:
+A practical wave plan for a two-variant board, where `‖` marks agents running in
+parallel:
 
 ```
 wave 1   resource-scout                      (libraries, provenance manifests)
@@ -65,32 +74,36 @@ wave 6   docs + hygiene + KB harvest
   gate   gates still pass after cleanup
 ```
 
-Re-gate *every* variant after any wave that touched a shared generator, not just
+Re-gate every variant after any wave that touched a shared generator, not just
 the one the agent was working on. A shared-file change that fixes B and breaks A
 is the normal outcome, not an unusual one.
 
 ## 3. Anatomy of an agent prompt
 
 Four blocks, always, in this order. Missing any one of them produces a
-recognizable failure mode.
+recognisable failure mode.
 
-**(a) State you inherit — verified facts.** What exists, where, with numbers.
+**(a) State you inherit, as verified facts.** What exists, where, with numbers.
 Current gate status. The named constants and their present values. The previous
-agent's handoff. What is deliberately *not* your problem. Without this block the
-agent re-derives the repo and burns a third of its budget.
+agent's handoff. What is deliberately not this agent's problem.
 
-**(b) Locked decisions — do not relitigate.** Verbatim from the decisions doc,
-never paraphrased, plus the barrier clause spelled out. Without this block agents
-substitute their own judgement on settled questions, and you find out from a
-physical part.
+Without this block the agent re-derives the repo and burns a third of its
+budget.
 
-**(c) Definition of done — the gate.** The exact command, and the exact numbers
-that count as passing. "DRC clean" is not a gate; `python3
-scripts/kicad_gate.py kicad/left` reporting DRC 0 at error severity with
-schematic parity and 0 unconnected is a gate. Without this block "done" is the
-agent's opinion.
+**(b) Locked decisions, not to be relitigated.** Verbatim from the decisions
+document, never paraphrased, plus the barrier clause spelled out.
 
-**(d) Required final-report shape.** Including the handoff section. Without this
+Without this block agents substitute their own judgement on settled questions,
+and you find out from a physical part.
+
+**(c) Definition of done, as the gate.** The exact command, and the exact
+numbers that count as passing. "DRC clean" is not a gate.
+`python3 scripts/kicad_gate.py kicad/left` reporting DRC 0 at error severity
+with schematic parity and 0 unconnected is a gate.
+
+Without this block, "done" means whatever the agent decided it means.
+
+**(d) Required final-report shape**, including the handoff section. Without this
 block you get prose, and the next agent inherits nothing.
 
 ### The locked-decisions block, with the barrier clause
@@ -134,63 +147,71 @@ For the next agent:
   - budget advice: what is tight, what has slack, what to expect
 ```
 
-The "for the next agent" section is the highest-leverage part of the whole
-protocol. It is what made a mirrored variant land clean on first regeneration
-after the first variant had cost most of a session.
+The "for the next agent" section is what makes symmetric work cheap the second
+time. In one run it is what let a mirrored variant land clean on first
+regeneration, after the first variant had cost most of a session.
 
-## 4. Between waves: verify, don't trust
+## 4. Between waves: verify, do not trust
 
-Run the gate yourself. Every time. An agent reporting "DRC 0" is reporting its
-last observation, which may predate its last edit.
+Run the gate yourself after every wave. An agent reporting "DRC 0" is reporting
+its last observation, which may predate its last edit.
 
-Read the JSON, not just the exit code: `python3 scripts/report.py FILE.json`
-gives you the one-line summary, and the records themselves tell you *where* and
-*which two items* — which is what distinguishes one systematic error from many
-independent ones. A large violation count that collapses to a single cause is
-common and is good news; the proving run's 21 violations in a mirrored block were
-all one inherited-sign mistake, and 295 violations across a whole board were one
-changed API argument.
+Read the JSON, not just the exit code. `python3 scripts/report.py FILE.json`
+gives the one-line summary, and the records themselves tell you where the
+problem is and which two items are involved. That is what distinguishes one
+systematic error from many independent ones.
+
+A large violation count that collapses to a single cause is common, and is good
+news. In one run, 21 violations in a mirrored block were all one inherited-sign
+mistake, and 295 violations across a whole board were one changed API argument.
 
 Two diagnostic patterns worth keeping:
 
-- **Committed artifact passes, fresh regeneration fails** → the fault is in
+- **Committed artifact passes, fresh regeneration fails.** The fault is in
   generation or the toolchain, not in the rules or the design settings. Same
   rules, different geometry. Do not go looking at the DRC configuration.
-- **Violation count immovable across two passes** → your model of the failure is
+- **Violation count immovable across two passes.** Your model of the failure is
   wrong, or a locked decision is the wall. Re-read the violation records before
-  nudging again; if the wall is a locked decision, that is a barrier report.
+  nudging again. If the wall is a locked decision, that is a barrier report.
 
-If a wave produced a regression, prefer re-dispatching with the regression as the
-stated diagnosis over fixing it yourself — the agent has the context. But make
-the diagnosis yours, from the report you read.
+If a wave produced a regression, prefer re-dispatching with the regression as
+the stated diagnosis over fixing it yourself, because the agent has the context.
+But make the diagnosis yours, from the report you read.
 
 ## 5. Cleanup: manifest, then execute
 
 Repo hygiene at the end of a run is destructive, so it goes in two steps.
 
-**Manifest first.** Produce a table: every path, a class
-(KEEP / ARCHIVE / DELETE / UNSURE / CREATE), and a justification. The
-justification is the point — "regenerable from X by one command", "the only
-record of which upstream commit generated version N", "668MB committed
-virtualenv". Anything genuinely uncertain is **UNSURE with the question stated**,
-and gets resolved by the user before anything moves.
+**Manifest first.** Produce a table with every path, a class, and a
+justification. The classes are KEEP, ARCHIVE, DELETE, UNSURE, and CREATE.
 
-Run the cross-reference checks *before* classifying, and record them, because
-they are what makes the classifications defensible: grep for references between
-subtrees, checksum files you suspect are duplicated, check whether a directory is
-actually read by anything.
+The justification is the point. Examples: "regenerable from X by one command",
+"the only record of which upstream commit generated version N", "668MB
+committed virtualenv".
 
-**Then execute, split for permissions.** Destructive steps go as small, separately
-approvable commands — one `rm -rf` per logical group, not one compound
-incantation. Order matters: write the `.gitignore` first, or the deletions come
-straight back. And **re-run the gate after the moves**: if the design still
-passes, nothing load-bearing left with the archive. That is the actual test that
-the cleanup was safe.
+Anything genuinely uncertain is UNSURE with the question stated, and gets
+resolved by the user before anything moves.
+
+Run the cross-reference checks before classifying, and record them, because they
+are what makes the classifications defensible. Grep for references between
+subtrees, checksum files you suspect are duplicated, and check whether a
+directory is read by anything.
+
+**Then execute, split for permissions.** Destructive steps go as small,
+separately approvable commands: one `rm -rf` per logical group, not one compound
+incantation.
+
+Order matters. Write the `.gitignore` first, or the deletions come straight
+back.
+
+**Re-run the gate after the moves.** If the design still passes, nothing
+load-bearing left with the archive. That is what tests whether the cleanup was
+safe.
 
 ## 6. Two condensed example prompts
 
-Genericized from the proving run. Real prompts are longer — mostly more numbers
-in block (a).
+Genericised from a proving run. Real prompts are longer, mostly because block
+(a) carries more numbers.
 
 ### Example: PCB variant, second of two
 
@@ -267,16 +288,13 @@ ROLE  case-engineer. Build the printed enclosure for the gated board.
 
 ## 7. Failure modes, named
 
-- **Prompt without recon** → the agent spends its budget rediscovering facts you
-  already had, and asserts a wrong one.
-- **Missing locked-decisions block** → silent deviation on a settled question.
-- **Gate stated as an adjective** → "done" means whatever the agent decided.
-- **No handoff section** → the next agent starts from zero; symmetric work costs
-  full price twice.
-- **Trusting a reported gate** → you build phase N+1 on an unverified phase N.
-- **Parallel agents sharing a generator** → clobbering, plus each gating against
-  a tree the other changed.
-- **Re-dispatching into a barrier** → turns burned against an unsatisfiable
-  constraint. The tell is the violation count not moving.
-- **Cleanup without a manifest** → something load-bearing leaves, and you find
-  out when the gate fails and you cannot say what changed.
+| Failure | What it produces |
+|---|---|
+| Prompt without recon | The agent spends its budget rediscovering facts you already had, and asserts a wrong one. |
+| Missing locked-decisions block | Silent deviation on a settled question. |
+| Gate stated as a quality rather than a number | "Done" means whatever the agent decided. |
+| No handoff section | The next agent starts from zero, so symmetric work costs full price twice. |
+| Trusting a reported gate | You build phase N+1 on an unverified phase N. |
+| Parallel agents sharing a generator | Clobbering, plus each agent gating against a tree the other changed. |
+| Re-dispatching into a barrier | Turns burned against an unsatisfiable constraint. The tell is the violation count not moving. |
+| Cleanup without a manifest | Something load-bearing leaves, and you find out when the gate fails and cannot say what changed. |
