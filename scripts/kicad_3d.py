@@ -39,15 +39,28 @@ exist.  This subcommand is what that round trip bought.
 
 What `verify` does and does not cover
 -------------------------------------
-It resolves each occurrence's placement: its origin in board coordinates, its
-Z-axis direction, and hence which face it is mounted on.  With `--board` it
-cross-checks that face against the footprint's own `IsFlipped()`, which is the
-check that catches a genuinely wrong-face model.
+It resolves each occurrence's placement: its origin in board coordinates and its
+Z-axis direction.  With `--board` it lists every occurrence whose Z is inverted
+relative to its footprint's own face.
+
+That listing is **reported, never failed on**, and the reason is the whole
+lesson.  Three different things invert the placed Z: mounting the footprint on
+the back, rotating the model 180 about X, and rotating it 180 about Y.  Only the
+first is a face.  A design that deliberately turns a model over in place -- a
+hotswap socket flipped so its barrels face the board, a keyswitch entering from
+the far side -- inverts Z while sitting exactly where it should.  An earlier
+version failed the run on that and turned 22 correct sockets and 22 correct
+switches into 44 red lines.  A check that fires on a correct design is worse
+than no check, because it teaches you to skip the output.
 
 It does **not** map each model's local geometry through the transform to give a
-placed bounding box.  That needs a per-product geometry walk this does not
-attempt.  The renders cover it: a side profile shows a back-face part hanging
-below the board immediately, and costs one command.
+placed bounding box, which is what would make the distinction sound.  That needs
+a per-product geometry walk this does not attempt.  The render covers it, and
+covers it cheaply: one side profile shows a part below the board, sunk into it,
+or floating above it, in a single command.
+
+So the division of labour is: `verify` tells you *where* every model is placed
+and which ones are turned over, the render tells you whether that is right.
 
 Python 3 stdlib only for the parsing half, so `verify` runs on a STEP file with
 no KiCad present.  `--board` shells out to KiCad's bundled interpreter.
@@ -323,7 +336,6 @@ def cmd_verify(args):
     front = [o for o in occ if o["face"] == "front"]
     back = [o for o in occ if o["face"] == "back"]
 
-    failures = []
     opposite = []
     if args.board:
         python, how = find_python()
@@ -331,32 +343,38 @@ def cmd_verify(args):
             raise SystemExit("error: no python that can import pcbnew (%s)\n"
                              "  fix: python3 scripts/preflight.py" % how)
         faces = board_faces(args.board, python)
-        # One footprint may legitimately carry several models, and one of them
-        # may sit on the opposite face on purpose: a keyswitch inserted from the
-        # far side into a socket soldered on this one is the standard case.  So
-        # the failure condition is not "some model faces the other way", it is
-        # "NO model for this footprint is on the face the board says".  Getting
-        # that wrong turns 22 correct switches into 22 red lines.
-        by_ref = {}
+        # This comparison is REPORTED, never failed on, and the reason is worth
+        # stating because the obvious version of it is wrong twice over.
+        #
+        # `face` here is derived from the sign of the placed Z axis, and three
+        # different things invert that sign: mounting the footprint on the back,
+        # rotating the model 180 about X, and rotating it 180 about Y.  Only the
+        # first is a face.  A design that deliberately turns a model over in
+        # place -- a hotswap socket flipped so its barrels face the board, a
+        # keyswitch entering from the far side -- inverts Z while sitting
+        # exactly where it should.
+        #
+        # Distinguishing those needs each model's placed geometry, which this
+        # tool does not compute (see the module docstring).  So an earlier
+        # version that failed the run turned 22 correct sockets and 22 correct
+        # switches into 44 red lines.  A check that fires on a correct design is
+        # worse than no check: it trains you to skip the output.
+        #
+        # What survives is the useful half.  The count and the listing tell you
+        # where every inverted-Z model is, so you can confirm each one is
+        # deliberate; the render is what proves the geometry.
         for o in occ:
             want = faces.get(o["label"])
             if want is None:
                 continue
             o["board_face"] = want
-            by_ref.setdefault(o["label"], []).append(o)
-        for _ref, group in sorted(by_ref.items()):
-            want = group[0]["board_face"]
-            if not any(o["face"] == want for o in group):
-                failures.extend(group)
-            else:
-                for o in group:
-                    if o["face"] != want:
-                        opposite.append(o)
+            if o["face"] != want:
+                opposite.append(o)
 
     if args.json:
         print(json.dumps({"occurrences": occ, "front": len(front),
-                          "back": len(back), "mismatches": len(failures),
-                          "opposite_face": len(opposite)}, indent=2))
+                          "back": len(back),
+                          "inverted_z": len(opposite)}, indent=2))
     else:
         print("%s" % args.step)
         print("  occurrences   %d  (front %d, back %d)"
@@ -380,25 +398,24 @@ def cmd_verify(args):
                          o["face"]))
         if args.board:
             if opposite:
-                refs_seen = sorted({o["label"] for o in opposite})
-                print("  opposite-face models  %d on %d footprint(s): %s"
-                      % (len(opposite), len(refs_seen),
-                         ", ".join(refs_seen[:6])
-                         + (" ..." if len(refs_seen) > 6 else "")))
-                print("  that is the insert-from-the-far-side pattern, not a "
-                      "fault. Each of these footprints also has a model on the "
-                      "face the board says.")
-            if failures:
-                print("  FAIL: %d footprint(s) have NO model on the board's face"
-                      % len({o["label"] for o in failures}))
-                for o in failures:
-                    print("     %-10s %-24s step says %-5s, board says %s"
-                          % (o["label"], o["product"][:24], o["face"],
-                             o["board_face"]))
+                by_product = {}
+                for o in opposite:
+                    by_product.setdefault(o["product"], []).append(o["label"])
+                print("  inverted Z relative to the footprint's face, %d "
+                      "occurrence(s):" % len(opposite))
+                for product, labels in sorted(by_product.items()):
+                    print("     %-28s %3d  e.g. %s"
+                          % (product[:28], len(labels),
+                             ", ".join(sorted(labels)[:3])))
+                print("  REPORTED, NOT FAILED. A 180 about X or Y inverts Z "
+                      "exactly like a back-face mount does, so this cannot "
+                      "tell a turned-over model from a misplaced one. Confirm "
+                      "each product above is deliberately turned over, then "
+                      "check the geometry in a side render.")
             else:
-                print("  face cross-check ok against %s"
+                print("  no inverted-Z models against %s"
                       % os.path.basename(args.board))
-    return 1 if failures else 0
+    return 0
 
 
 def cmd_render(args):
