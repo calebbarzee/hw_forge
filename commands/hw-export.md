@@ -156,7 +156,89 @@ connector, or that a part is on the wrong face.
 
 Report each image's path and size, and say what is worth looking at in it.
 
-## 5. Report
+## 5. Mechanical review: the populated 3D assembly
+
+This is a different export from the fab package, and a different export from
+the top/bottom renders in §4. It produces one populated STEP assembly, for a
+human or an enclosure generator to check a part against a case, not to fab a
+board from.
+
+**Gate first**, same as §1. Exporting an ungated board's geometry is the same
+mistake as fabbing it.
+
+**Models must be real and verified before this export is meaningful.** An
+export built from mock-up placeholder solids looks exactly like an export built
+from real, correctly-licensed vendor models: same file structure, same
+plausible-looking parts in plausible-looking places. The difference only shows
+up if someone checks phase 1's provenance table. So before producing or trusting
+this artifact, confirm every part in it cleared phase 1's model gate rather than
+inferring it from the export succeeding.
+
+**Choose copper-inclusive or geometry-only.** Both are `kicad-cli pcb export
+step`; the difference is four flags:
+
+```bash
+# Geometry-only: board body and component bodies, no copper. What an
+# enclosure model needs.
+kicad-cli pcb export step -o review/board-3d.step board.kicad_pcb
+
+# Copper-inclusive: adds tracks, pads, zones, and inner-layer copper.
+# What a reviewer checking a net or a clearance to a trace needs.
+kicad-cli pcb export step -o review/board-3d-copper.step \
+  --include-tracks --include-pads --include-zones --include-inner-copper \
+  board.kicad_pcb
+```
+
+On the reference board the geometry-only file was about 4 MB and the
+copper-inclusive file about 27 MB. Case coupling does not need copper, so
+default to geometry-only for enclosure review and reach for the copper-inclusive
+export only when the question is electrical rather than mechanical.
+
+**The origin is not yours to choose, and that is fine.** KiCad 10.0.5's `pcb
+export step` has no origin option at all: it always writes the board's own
+frame. Checked against `kicad-cli pcb export step --help`; do not add an origin
+flag on the assumption that one exists, as an earlier draft of this section did.
+That frame is the one you want anyway, because an enclosure model is built from
+the same board file. `kicad-cli` already negates Y on export, which matches a
+case generator that keeps board x and negates y. What differs is the z datum: a
+case generator that puts z=0 on the PCB top face needs the transform `case_z =
+step_z − 1.595`. On the reference project that resolved a nice!nano USB shell to
+1.62 mm of clearance above the enclosure floor against a 1.70 mm nominal, the
+0.08 mm gap being the soldermask offset. See `references/kicad-api.md` §9 for
+where the 1.595 mm comes from and why a raw `CARTESIAN_POINT` sweep cannot be
+trusted to find it for a component.
+
+**Both exports and the verification are wrapped by one script**, which is what
+to reach for rather than assembling the flags by hand:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kicad_3d.py" \
+    export BOARD.kicad_pcb -o review/board-3d.step [--with-copper]
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kicad_3d.py" \
+    verify review/board-3d.step --board BOARD.kicad_pcb
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kicad_3d.py" \
+    render BOARD.kicad_pcb -o review/renders --views top,bottom,left
+```
+
+`export` reports every footprint that exported with no body. `verify` resolves
+the occurrence transforms and cross-checks each part's face against the board,
+exiting nonzero on a mismatch. `render` produces the transform-aware views.
+
+**Verify with the render-first ladder before trusting the export**: the side
+view is the cheapest check and shows a wrong-face or floating part immediately,
+before opening the STEP file in anything. Note that `verify` and the render
+catch different faults and neither subsumes the other. `verify` checks the face
+across every occurrence, which nobody will eyeball on a 150-part board; only the
+render shows a part on the correct face at the wrong height. Full detail,
+including the occurrence-transform trap and the `(model ...)` sign conventions,
+is in `references/kicad-api.md` §9.
+
+**A known, non-fatal export warning:** `Could not add 3D model ... File not
+found` does not fail the export; the part just exports with no body. Report
+every missing-model warning rather than letting a clean exit code stand in for
+a complete assembly.
+
+## 6. Report
 
 List every artifact with its size, grouped by board, and state the assertion
 result explicitly:
@@ -179,7 +261,7 @@ the board relies on). If the board carries a **relaxed design rule**, name it
 here: a custom rule is something the fab's own minimum has to be checked against,
 and it should never be a surprise found at order time.
 
-## 6. "Did the geometry actually change?": proving old gerbers still valid
+## 7. "Did the geometry actually change?": proving old gerbers still valid
 
 When a board was regenerated for a non-geometric reason (rule changes, doc
 edits, generator refactors) and the user asks whether an already-exported

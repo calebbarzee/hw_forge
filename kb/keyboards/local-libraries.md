@@ -1,8 +1,8 @@
 ---
 domain: keyboards/libraries
-tags: [kicad-libraries, footprints, symbols, corne, foostan, scottokeebs, keyswitches-pretty, ergogen, ceoloide, nice-view, zmk-source, gitlink, vendoring, provenance]
-source: local filesystem survey, 2026-08-22; z_board v0.4 (CLEANUP.md, kicad/NOTES.md); hexpad resource-scout run, 2026-08-22
-date: 2026-08-22
+tags: [kicad-libraries, footprints, symbols, 3d-models, step, corne, foostan, scottokeebs, keyswitches-pretty, ergogen, ceoloide, nice-view, zmk-source, gitlink, vendoring, provenance, license-contamination, marbastlib, borne-keyboard, hexpad, placeholder]
+source: local filesystem survey, 2026-08-22; z_board v0.4 (CLEANUP.md, kicad/NOTES.md); hexpad resource-scout run, 2026-08-22; hexpad 3D-model sourcing pass, 2026-09-03 (rendered each candidate, kicad-cli pcb render)
+date: 2026-09-03
 confidence: verified-in-cad
 ---
 
@@ -114,6 +114,83 @@ added to `nice_view.overlay` since its pinned commit), which is itself a useful 
 pin the exact commit checked, and re-diff against upstream when trusting an old local
 clone for anything that changes over time, such as display timing parameters.
 
+## 6. Where to get a real 3D model, not just a footprint
+
+A footprint check (DRC/ERC/parity) never touches 3D geometry, so a board can gate clean
+while its 3D assembly is entirely mocked-up. That happened once already: a run built
+mock-up geometry from scratch while real STEP models for the same parts sat unused one
+project over, on the same disk. The fix is a search order, stated once here so it does not
+have to be rediscovered:
+
+**project's own library → sibling projects on this disk → known open-source libraries →
+vendor → build it yourself, last resort.**
+
+Every entry below was confirmed by placing the footprint on a throwaway board and running
+`kicad-cli pcb render`, then looking at the image. Do not trust a filename or a repo's own
+directory naming; see the placeholder trap below for why.
+
+| Part | File | Repo, local path | License |
+|---|---|---|---|
+| Kailh MX hotswap socket | `kailh_hotswap_socket.step` | `foostan/kbd`: `kbd/kicad-packages3D/kbd.3dshapes/`, also copied at `~/1_projects/dev/keyboard/hexpad/lib/3dmodels/` | MIT |
+| SK6812MINI-E | `YS-SK6812MINI-E.step` | same (`kbd.3dshapes/`), also copied at `hexpad/lib/3dmodels/` | MIT |
+| Cherry MX switch | `CherryMX Switch.step` | `foostan/kbd`: `kbd.3dshapes/` | MIT |
+| MX switch, higher detail, with matching footprint | `MX_PCB.step` | `~/1_projects/dev/keyboard/scottokeebs/Extras/ScottoKicad/3dmodels/ScottoKeebs_MX.3dshapes/` | CC BY-NC-SA 4.0 |
+| nice!nano v2 | `Nice_Nano_V2.step` | same repo: `ScottoKeebs_MCU.3dshapes/` | CC BY-NC-SA 4.0 |
+| MSK12C02 slide switch | `SW_MSK12C02.step` | `ebastler/marbastlib` (not checked out locally; fetch from GitHub) | CERN-OHL-P-2.0, contested — see below |
+| Molex Pico-EZmate 78171-0002 | via `gibbz00/borne-keyboard` | not checked out locally; fetch from GitHub | MPL-2.0, but the geometry itself appears to be Molex's own CADENAS-generated model rehosted, so treat the MPL-2.0 tag as covering the repackaging, not necessarily the underlying shape |
+
+### `hexpad/lib/3dmodels/` mixes real models and mock-ups, distinguished only by filename
+
+`~/1_projects/dev/keyboard/hexpad/lib/3dmodels/` holds both. The mock-ups all carry
+`PLACEHOLDER` in the filename: `nice_nano_v2_body_PLACEHOLDER.step`,
+`usb_c_receptacle_PLACEHOLDER.step`, `Molex_Pico-EZmate_78171-0002_PLACEHOLDER.step`,
+`SW_SPDT_Shouhan_MSK12C02_PLACEHOLDER.step`. The real ones
+(`kailh_hotswap_socket.step`, `YS-SK6812MINI-E.step`) do not. A future run copying from
+this directory must check for that suffix before treating a file as sourced; nothing else
+in the directory listing tells the two apart.
+
+### Two upstream KiCad footprints reference 3D models that do not exist anywhere
+
+Stock KiCad footprints call out models KiCad itself does not ship:
+
+- `Button_Switch_SMD:SW_SPDT_Shouhan_MSK12C02` wants
+  `Button_Switch_SMD.3dshapes/SW_SPDT_Shouhan_MSK12C02.step`
+- `Connector_Molex:Molex_Pico-EZmate_78171-0002_1x02-1MP_P1.20mm_Vertical` wants
+  `Connector_Molex.3dshapes/Molex_Pico-EZmate_78171-0002_1x02-1MP_P1.20mm_Vertical.step`
+
+Searched and confirmed absent from both the local KiCad install's own
+`.../3dmodels/*.3dshapes/` trees and a fresh checkout of
+`github.com/KiCad/kicad-packages3D` (globbed for `*MSK12C02*` and `*Pico-EZmate*` in
+both). This is a scoped negative as of 2026-09-03; re-glob those two patterns in a future
+KiCad release before trusting it still holds.
+
+A missing model is not a build error. `kicad-cli` (and the GUI export) emit a
+non-fatal warning during STEP export — "Could not add 3D model" — and continue, so the
+part silently exports as a void unless someone reads the export log. Assert the STEP
+export log is warning-free, or diff the exported part count against the footprint count,
+rather than trusting a successful exit code.
+
+### License contamination is real, and a STEP export propagates it
+
+A STEP export **embeds** model geometry; it does not reference the source file. The
+exported assembly therefore inherits the most restrictive license among every model it
+contains, the same way a statically linked binary inherits its dependencies' licenses.
+
+Two of the seven parts above (ScottoKeebs' MX switch and nice!nano models) carry CC
+BY-NC-SA 4.0, a non-commercial, share-alike restriction. A board meant to be sold
+commercially cannot ship an assembly export containing either, even though the
+footprints and copper are unaffected.
+
+Worse, the MSK12C02 geometry is byte-identical between `ebastler/marbastlib`
+(CERN-OHL-P-2.0) and ScottoKeebs (CC BY-NC-SA 4.0), down to shared footprint UUIDs. The
+two licenses cannot both be right for the same shape, and which one is correct is
+unresolved as of this writing.
+
+Doctrine: track provenance and license per model, not just per project, because one
+export can silently mix them. Know in advance which single-off parts (one nice!nano, one
+slide switch) can be swapped or dropped to make a specific export redistributable,
+rather than discovering the conflict at release time.
+
 ## Doctrine: vendor into the project library, then upgrade
 
 1. Search all four locations before authoring anything: the three KiCad-native
@@ -121,7 +198,9 @@ clone for anything that changes over time, such as display timing parameters.
    checkout (§5), which cover display/connector/exotic parts and devicetree facts the
    KiCad libraries never will. Hand-authored geometry is the most expensive and least
    trustworthy artifact in the pipeline; the phase-1 exit gate is "every part resolves,
-   zero hand-authored geometry".
+   zero hand-authored geometry". The same order applies to 3D models (§6): this
+   project's library, then sibling projects on this disk, then known open-source
+   libraries, then the vendor, and only then build one by hand.
 2. Copy the part into a project-local library (`lib/<project>.kicad_sym`,
    `lib/<project>_kbd.pretty/`) rather than referencing the vendor path. Project
    `sym-lib-table` / `fp-lib-table` point at `${KIPRJMOD}/../lib/`, so a project resolves

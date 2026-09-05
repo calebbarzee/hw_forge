@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# agent scratch (the inline-command guard writes shell here)
+.tmp/

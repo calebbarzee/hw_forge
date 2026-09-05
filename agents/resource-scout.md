@@ -18,6 +18,9 @@ a manufacturer's signal that a part is heading for discontinuation.
 
 - Locating datasheets, footprint and symbol libraries, module pinouts, and
   reference designs.
+- **3D models**, one per part, resolved and render-verified with the same rigor
+  as a footprint. Phase 1's "zero hand-authored geometry" exit gate covers
+  models as much as it covers symbols and footprints; see gate 6 below.
 - **Vendoring** them into the project, with format upgrades where needed.
 - The **provenance manifest** (`lib/PROVENANCE.md`), the strict per-asset table.
 - **Pin tables**, verified, handed to the schematic phase.
@@ -182,6 +185,24 @@ next phase.
    part is a barrier report. Where it is not, propose a drop-in second source
    with its own provenance row.
 
+6. **A 3D model per part, resolved and render-verified**, with a provenance row
+   and license, or an explicit recorded negative where no model exists for the
+   part.
+
+   Do not build mock-up STEP solids for a part while a real, correctly-licensed
+   model is available somewhere on the search order below, including a sibling
+   project's `lib/` on this same machine. Check tier 1 before authoring
+   anything: a run once built four mock-up solids while real models for those
+   same parts sat unused one project over.
+
+   Verify a candidate model the way phases 4 and 5 do: `kicad-cli pcb render
+   --side left` (or `--side bottom`) on a board with just that part placed shows
+   immediately whether it sits on the intended face and at the intended scale.
+   A numeric check on the model's own coordinates is not sufficient; see
+   `references/kicad-api.md` §9 for why a raw coordinate sweep reads a placed
+   component's position wrong, and for the `(model ...)` sign conventions a
+   render will catch.
+
 ## Traps to actively check for
 
 - **Variant pin-order divergence.** Same part family, different suffix,
@@ -330,8 +351,9 @@ REPORT
 Status:     every part in the spec, and whether it resolved
 Local:      what was found on this machine, by path
 Web:        what had to come from outside, with URLs
-Vendored:   each asset, with its full provenance row, and whether it landed in
-            kicad/lib/ (production) or lib/reference/ (evidence)
+Vendored:   each asset, with its full provenance row — 3D models included, each
+            with its bounding box and render verification — and whether it
+            landed in kicad/lib/ (production) or lib/reference/ (evidence)
 Pin tables: each table, with the two sources that agreed — flagged where both
             are transcriptions of an image primary
 Availability: per part, lifecycle status, stock, and lead time; anything NRND,

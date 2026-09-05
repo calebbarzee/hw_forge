@@ -1,8 +1,8 @@
 ---
 domain: projects/zboard
-tags: [z_board, regression-fixture, split-keyboard, zmk, nice-nano, reversible-pcb, build123d, gates]
-source: z_board v0.4 (README.md, HISTORY.md, kicad/NOTES.md, kicad/POWER.md, case/README.md, PIPELINE.md)
-date: 2026-08-22
+tags: [z_board, regression-fixture, split-keyboard, zmk, nice-nano, reversible-pcb, build123d, gates, mcu-flip, schematic-parity, kicad-dru, zone-min-island, 3d-models]
+source: z_board v0.4 (README.md, HISTORY.md, kicad/NOTES.md, kicad/POWER.md, case/README.md, PIPELINE.md); z_board MCU-flip and 3D-export work, 2026-09-03/04 (kicad/MCU-FLIP.md, kicad/3D-EXPORT.md)
+date: 2026-09-03
 confidence: verified-in-cad
 ---
 
@@ -23,33 +23,59 @@ z_board's current gate numbers from the outside. If `kicad_gate.py` does not rep
 0/0/0/0 on all four projects, the regression is in the genericized script; z_board's own
 gate numbers are the reference.
 
-## Gate state (2026-08-22, KiCad 10.0.5)
+## Gate state (2026-09-03, KiCad 10.0.5)
 
-Electrical rule check (ERC) and design rule check (DRC) results:
+All four boards gate clean at **every severity**, not just error: violations 0,
+unconnected 0, schematic parity 0, parity enforced 5/5 (`extra_footprint`,
+`footprint_symbol_mismatch`, `lib_footprint_mismatch`, `missing_footprint`,
+`net_conflict`, all promoted from `warning` to `error`; before that promotion "parity ok"
+was never actually a gate).
 
 | | proto (1 key) | left | right (mirrored) | combo (reversible) |
 |---|---|---|---|---|
 | ERC | 0 | 0 | 0 | 0 |
-| DRC (error severity, `--schematic-parity`) | 0 | 0 | 0 | 0 |
+| DRC, all severities | 0 | 0 | 0 | 0 |
 | schematic parity | 0 | 0 | 0 | 0 |
 | unconnected | 0 | 0 | 0 | 0 |
+| parity enforced | 5/5 | 5/5 | 5/5 | 5/5 |
+
+This supersedes the card's previously recorded "documented surviving warnings" (two
+`npth_inside_courtyard` and one `isolated_copper` on the halves). The MCU-flip work
+(2026-09-03) retired both:
+- `npth_inside_courtyard` was a dead demotion — reverting it to error and rebuilding fired
+  nothing on any of the four boards. Removed from all three generators, with one
+  footprint-scoped `.kicad_dru` rule (`courtyard_clearance (min -8mm)` conditioned on
+  `MCU1`) taking its place for the five real MCU-courtyard overlaps.
+- `isolated_copper` was fixed by raising `ZONE_MIN_ISLAND` 3.0 → 5.0, which removes only
+  disconnected pour islands and leaves connected pour (e.g. the right half's 13.12 mm²
+  VCC pocket, which has two taps) untouched.
 
 Halves: 101 footprints each; 421 tracks / 102 vias (left), 405 / 99 (right); zones filled
 inside the generator.
 
-Combo is clean at every severity, no warnings, both inner planes filling as a single
-island. Since 2026-08-22 its DRC also carries JLCPCB capability floors: 0.09 clearance and
-0.15 via annular in project rules, plus 0.45 plated-through-hole (PTH) hole-to-hole and
-0.28 PTH hole-to-copper as pad-type-conditioned `.kicad_dru` rules (see
-`kb/fabs/jlcpcb.md`), applied by `gen_combo.patch_project()`. The 2-layer halves do not
-carry them yet.
-
-Documented surviving warnings on the halves only: two deliberate `npth_inside_courtyard`
-per board (power switch nested under the module) and one `isolated_copper` sliver in the
-left VCC pour.
+Combo carries JLCPCB capability floors on its DRC: 0.09 clearance and 0.15 via annular in
+project rules, plus 0.45 plated-through-hole (PTH) hole-to-hole and 0.28 PTH hole-to-copper
+as pad-type-conditioned `.kicad_dru` rules (see `kb/fabs/jlcpcb.md`), applied by
+`gen_combo.patch_project()`. The 2-layer halves do not carry them yet.
 
 Board outline 122.3 × 86.2 mm, 2 layers (VCC pour F.Cu, GND pour B.Cu). Fab exports and
 renders generated and assertion-gated.
+
+## The MCU is now on the back face, on all three boards
+
+- Halves: a real `Flip()`. The module's pad columns land on the opposite pad-row y from
+  before, which sounds like a free swap but is not: the Kailh socket's own footprint does
+  not mirror, so every cell-relative offset (column bus, row via, socket pads) negates in
+  along-axis space. Eight of nine corner-routing defects the flip surfaced trace back to
+  this one fact; see `kicad/MCU-FLIP.md` for the routing detail (out of scope for this
+  card).
+- Combo: not a `Flip()` at all. The module sits on one of two interleaved 24-hole grids,
+  offset from each other purely in y by one full pitch (`MCU_GRID_DX = 0`,
+  `MCU_GRID_DY = 2.54`). Which grid a build uses is set by which face the module body is
+  on, not by which half it is, so moving the module to the back face is a re-assignment
+  between the two grids with **zero copper change** — `kicad_digest.py --compare` against
+  the pre-flip board reports exactly one differing line, a corrected footprint `descr`
+  string, no geometry.
 
 ## Where the knowledge lives
 
@@ -132,10 +158,32 @@ Case outer 127.9 × 91.8 × 17.2 mm per half; plate top at z = +5.00 (z = 0 is t
 face); cavity 8.00 mm sized by a 503450 ~1000 mAh cell (5.0 + 0.4 swell) over a
 2.60 mm parts clearance. Both shells print support-free, reference face down.
 
+## The combo now exports a populated assembly
+
+Every footprint on the combo board carries a real, sourced 3D model. The combo exports a
+populated assembly STEP for mechanical review, not a bare board. Provenance, licenses and
+the calibration table are in `kicad/3D-EXPORT.md`; where each model came from is in
+`kb/keyboards/local-libraries.md` §6.
+
+**This is also the fixture's record of getting it wrong first.** The initial attempt wrote
+`kicad/mk3d.py`, a pure-python STEP AP214 writer, and authored mock box solids for the
+Kailh socket, the SK6812MINI-E and the nice!nano. Real, correctly-licensed models for the
+first two were already on the same disk, in a sibling project, and a real MX switch and
+nice!nano were one directory further. Phase 1's "zero hand-authored geometry" exit gate
+already forbade this; it was being read as covering footprints and symbols only. `mk3d.py`
+and its four outputs are retained, unreferenced, so the anecdote has something to point at.
+
 ## Open items on z_board itself
 
-- Case not yet updated for the combo board (USB cutout 2.54 mm taller, actuator slot moves,
-  battery pocket and reset poke-hole move to the corner east of the module).
+- The combo's reversible footprints carry **no courtyard** at all (`mklib_rev.py` never
+  emits an `F.CrtYd`/`B.CrtYd` rectangle, unlike `mklib.py`'s non-reversible footprints).
+  So `courtyards_overlap` on the combo board can only ever compare its 6 stock mounting
+  holes; it is effectively unenforced across the other 117 placements. Zero violations
+  there is silence, not a clean bill of health.
+- Case not yet updated for the combo board. It is still built for the halves' MCU position
+  (2.975, 59.5) and does not fit the combo's grid geometry (grid A at (2.34, 59.5), grid B
+  2.54 mm south of it). Also: USB cutout 2.54 mm taller, actuator slot moves, battery
+  pocket and reset poke-hole move to the corner east of the module.
 - Boards not yet ordered; no hardware exists, hence `verified-in-cad`, not
   `verified-in-hardware`, on every z_board-sourced card.
 - SWIG `pcbnew` dependency must go before KiCad 11.

@@ -489,3 +489,141 @@ passes, and it would have caught a swap.
 
 That is the same doctrine one sentence longer, and it covers the two families
 where this keeps happening: connectors and encoders.
+
+## 9. STEP export: the AP214 assembly, `(model ...)` conventions, and proving nothing moved
+
+A KiCad STEP export is an **AP214 assembly**. Each unique 3D model's geometry is
+written once, in its own local frame. Every footprint that uses it is an
+instance, carried by:
+
+```
+NEXT_ASSEMBLY_USAGE_OCCURRENCE
+  -> PRODUCT_DEFINITION_SHAPE
+  -> CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
+  -> ITEM_DEFINED_TRANSFORMATION
+  -> AXIS2_PLACEMENT_3D
+```
+
+That structure makes `grep CARTESIAN_POINT | min/max` two different tools
+depending on what it is pointed at.
+
+### Trap: `CARTESIAN_POINT` is a valid z-extent check for the board and copper, and an invalid one for components
+
+The board slab and copper are baked into the file as absolute coordinates, so a
+min/max sweep over their points is correct. A component's geometry sits at its
+raw local coordinates and is placed only by the occurrence transform chain
+above, so the same sweep over a component's points reports where its model was
+authored, not where it sits on the board. One tool answers one question
+correctly and the other confidently wrong, in the same file.
+
+The failure signature: every component appears to sit at z 0 to h, on the wrong
+face, intersecting the board. Read that way once, it was reported as a defect,
+an agent was dispatched to fix a bug that did not exist, and the round trip was
+wasted.
+
+Verify correctly, cheapest check first:
+
+1. `kicad-cli pcb render --side left` (or `--side bottom`). One command,
+   transform-aware, and a side profile shows a back-face part hanging below the
+   board or a front-face part standing above it immediately. Reach for this
+   before writing any STEP parser.
+2. Resolve the occurrence transform chain, which `scripts/kicad_3d.py verify`
+   does:
+
+   ```bash
+   python3 scripts/kicad_3d.py verify OUT.step --board BOARD.kicad_pcb
+   ```
+
+   It reports every occurrence's placed origin, its Z-axis direction and hence
+   its face, and with `--board` cross-checks that face against the footprint's
+   own `IsFlipped()`, exiting nonzero on a mismatch. `--verbose` gives the
+   per-occurrence table, `--json` makes it consumable.
+
+   **It deliberately does not map each model's local geometry through the
+   transform**, so it will not tell you a part is floating above the board at
+   the right face. Only the render does that. The two are complementary and
+   neither subsumes the other: `verify` catches a wrong face across 150
+   occurrences nobody will eyeball, the render catches a right face at the
+   wrong height.
+
+   One semantic to know before reading its output: **one footprint may carry
+   several models, and one of them may sit on the opposite face on purpose.** A
+   keyswitch inserted from the far side into a socket soldered on this one is
+   the standard case. So the failure condition is not "some model faces the
+   other way", it is "no model for this footprint is on the face the board
+   says". `verify` prints the former as an informational `opposite-face models`
+   line and fails only on the latter. Written the naive way it turned 22
+   correct switches into 22 red lines.
+
+Measured datum, KiCad 10.0.5, 1.6 mm board: the board slab spans z −0.085 to
++1.595, the two offsets being soldermask overhang. A back-face occurrence's
+origin lands at z exactly −0.085 with a mirrored Z axis; a front-face
+occurrence's origin lands in [0, 1.595].
+
+### Trap: `(model ...)` offset and rotation do not use the sign you would guess
+
+The block is `(model PATH (offset (xyz ...)) (scale (xyz ...)) (rotate (xyz
+...)))`, offsets in mm and rotations in degrees, attached per footprint.
+
+The offset's Y component is inverted relative to the footprint's local +Y. Z
+rotation is clockwise-positive, and a naive counter-clockwise rotation matrix
+gives the wrong sign: a module whose model had USB at local +Y needed `rotate
+(0,0,-90)` to put USB west, and `+90` put it east instead. Derive the sign for a
+new part by rendering it, not by trusting the matrix.
+
+### Trap: `scale` mirrors a part; it does not turn it over
+
+`scale (xyz -1 1 1)` is honoured as a true geometric reflection, which is the
+mechanism for serving the mirrored population of a reversible footprint.
+Verified by rendering a mirrored and an unmirrored instance of an asymmetric
+part side by side.
+
+A part mounted from the opposite face needs `rotate (180,0,0)` plus a negative z
+offset equal to the board thickness, not `scale (1,1,-1)`. The 180-degree X
+rotation flips z and y together, which is what turning a part over actually
+does. The scale mirrors the part in place and leaves it inside-out; the symptom
+was a keyswitch stem poking up through the top of the board.
+
+### Trap: a STEP file may declare its units as metres
+
+KiCad honours the unit context on import, so a mis-scale is a factor of 1000. It
+is invisible in a numeric check on the placed coordinates and unmissable in a
+render. Verify units by picture, not by reading the declared scale back.
+
+### Calibrate on one instance before applying to all
+
+Attach the model to one footprint, render, look, and iterate on that one before
+touching the rest. On the reference run this took two iterations each for the
+switch and for the module and got the other five parts right on the first try.
+The cost of skipping this step is paying for the same sign error N times instead
+of once.
+
+A reversible footprint serving two mirror-image populations can carry only one
+model placement. Pick a build, state which, and expect the other build's render
+to show those parts mirrored. That is inherent to a single-placement
+attachment, not a bug to fix.
+
+### Trap: a vendor model may include hardware your board does not carry
+
+The nice!nano model ships with populated pin headers reaching 5.04 mm past the
+board's back face. This design socket-mounts the module on 1.90 mm standoffs and
+has no such pins. Left in, the headers dominate the assembly's z extent and make
+an enclosure clearance look far worse than it is. Flag features like this rather
+than trusting the model's own z extent.
+
+### Trap: attaching models makes the raw diff enormous, and enormous does not mean wrong
+
+Attaching models regenerates footprints, which churns UUIDs, so `git diff` on
+the board file is enormous and useless for judging whether copper moved: the
+reference change showed 18,613 deletions for an edit that moved nothing.
+`kicad_digest.py --compare` also reports `DIFFERS`, correctly, because the model
+lines are genuinely new lines.
+
+The check that means something is a **geometry fingerprint**: compare the
+multiset of pads, tracks, vias, zone outlines, and edge segments between the old
+and new board, ignoring model attachment lines entirely. On the reference
+project that count was identical before and after: combo 1503 primitives, left
+793, right 811, proto 23. Either extend `kicad_digest.py`'s comparison to
+separate "model lines added" from "geometry changed", or state the fingerprint
+method by hand. Describe the principle here; do not invent a comparison flag for
+a script you have not read.

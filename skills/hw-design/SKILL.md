@@ -39,11 +39,11 @@ reported.
 | # | Phase | Entry contract | Owner | Exit gate |
 |---|---|---|---|---|
 | 0 | **Spec lock** | a device idea | you + user | decisions doc: locked choices verbatim, numbered open questions each with a recommendation; user answers or explicitly delegates every one |
-| 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry |
+| 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry — symbols, footprints, **and 3D models**: a resolved, render-verified 3D model per part, with provenance and license, or an explicit recorded negative for parts where none exists |
 | 2 | **Logical design** | resolved part list | agent (or you, if small) | `design.py` imports clean under **both** system Python and the CAD Python; every net, pin map and topology fact derives from it |
 | 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0; there is no board yet, and a missing one is skipped rather than failed); power-design decision record written |
 | 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity enforced**; 0 unconnected; zones filled headlessly inside the generator; and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`) |
-| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders inspected |
+| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders inspected; the populated 3D assembly exported as its own mechanical-review artifact, distinct from the fab package |
 | 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything green | agent + you | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
 
@@ -53,6 +53,15 @@ is not enough.** `kicad_gate.py` must print `parity enforced`, not
 `--severity-error` filters them out, so a project that has not promoted them
 reports a parity pass from a check that cannot fail. The mechanism and the
 measurement are in `references/kicad-api.md` §2.
+
+**Phase 1's "zero hand-authored geometry" gate needs its own sentence too,
+because it was being read as covering symbols and footprints only.** It covers
+3D models with the same force. A run built mock-up STEP solids for four parts
+while real, correctly-licensed models sat unused in a sibling project on the
+same disk, because nobody read the rule as reaching that far. The rule did not
+need changing; it needed to say "and 3D models" out loud. Phase 1 resolves and
+verifies a model per part alongside the symbol and footprint, with provenance
+and license recorded, same as any other vendored asset.
 
 Two ordering facts that are easy to get wrong:
 
@@ -64,6 +73,11 @@ Two ordering facts that are easy to get wrong:
   outline, hole positions, footprint positions, courtyards, and which face each
   part's hardware actually protrudes on. Never work from a spec table alone. A
   spec table records what the board was supposed to be.
+- **The populated 3D assembly is the other half of that geometry read.**
+  `kicad_geom.py` gives coordinates; the assembly, produced in phase 5 and
+  consumed in phase 6, is what lets a human see a part on the wrong face or a
+  connector fouling a wall, before either becomes a print. See
+  `references/kicad-api.md` §9 and `commands/hw-export.md` §5.
 
 **What legitimately round-trips backwards.** Phases own their files, with one
 carve-out.
@@ -176,6 +190,12 @@ instance of the part, and DRC stays clean because everything is connected
 exactly as the wrong netlist says. A generated pair cannot drift. The doctrine,
 and what to do when both halves are stock parts, is in
 `references/kicad-api.md` §8.
+
+**The mechanical-review export and the fab export are different exports.** They
+use different `kicad-cli` flags, get verified differently, and are read by
+different people: an enclosure model and a human on the review export, a fab
+house on the other. Do not conflate them, and do not let one stand in for the
+other. See `commands/hw-export.md` §5.
 
 **Handoff reports.** Every agent ends with a "for the next agent" section:
 diagnosis, the named constants worth touching, budget advice, and what it tried
@@ -324,7 +344,7 @@ Load on demand. Do not read all of these up front.
 | Reference | Load when |
 |---|---|
 | `references/orchestration.md` | Before writing any agent prompt, or planning waves. The prompt template and the wave rules live here. |
-| `references/kicad-api.md` | Any phase 2 to 5 work: `kicad-cli` invocations and flags, headless `pcbnew`, zone filling and island removal, project-file severity patching, s-expression parsing gotchas, and the SWIG to IPC migration note. |
+| `references/kicad-api.md` | Any phase 1 to 5 work: `kicad-cli` invocations and flags, headless `pcbnew`, zone filling and island removal, project-file severity patching, s-expression parsing gotchas, the SWIG to IPC migration note, and STEP export (the AP214 assembly structure, `(model ...)` sign conventions, and proving a model change moved no copper). |
 | `references/electronics.md` | Phase 3, for power topology, decoupling policy, current budget, and the level-shift rule. Phase 4, for matrix and chain routing patterns, layer split, the mirroring traps, and reversible-board schemes. |
 | `references/mechanical.md` | Phase 6: heat-set inserts, screw-length stack-up arithmetic, air-gap ledgers, clamp against pass-through fastening, printability rules, and tolerance defaults. |
 | `references/batteries.md` | Phase 0 or 3, when a cell is in scope: cell naming and size tables, capacity, connectors and mated heights, and swell allowance. |

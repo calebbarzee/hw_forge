@@ -43,7 +43,9 @@ The seven working rules, stated in full in the role definition:
 
 1. **Reuse before you author.** Search, in this order: the project's own
    library, other local projects, the KiCad stock libraries, then reputable
-   third-party libraries, then, last, generate it from a pin table.
+   third-party libraries, then, last, generate it from a pin table. This
+   applies to 3D models exactly as it applies to footprints: check other local
+   projects' libraries before building placeholder geometry for a part.
 
 2. **Two independent sources for every pinout.** The manufacturer datasheet
    plus one of: a second vendor's datasheet, a known-good reference design, or
@@ -91,6 +93,9 @@ Baseline, unless overridden above:
 - every pinout carries two sources, or an explicit note that it does not
 - a provenance manifest exists covering every acquired asset
 - zero hand-authored geometry that could have been generated from a pin table
+- a resolved, render-verified 3D model per part, with provenance and license,
+  or an explicit recorded negative where none exists — the same gate as the
+  symbol and footprint, not an optional extra
 
 Verify the resolution mechanically rather than by eye:
 

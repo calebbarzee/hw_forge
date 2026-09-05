@@ -395,7 +395,7 @@ Tolerance defaults. Start here, then adjust one dimension at a time.
 
 | Fit | Default |
 |---|---|
-| Press or clip fit for a moulded part, such as a switch into a plate cutout | nominal + 0.15 mm |
+| Press or clip fit for a moulded part, such as a switch into a plate cutout | nominal + 0.15 mm, **plus a hole-shrink allowance if the part is FDM** (see below) |
 | Board-to-cavity clearance per side | 0.30 mm |
 | Lid to rabbet air gap per side | 0.15 mm |
 | General slip-fit gap | 0.2 to 0.3 mm |
@@ -410,7 +410,60 @@ Tolerance defaults. Start here, then adjust one dimension at a time.
   enclosure.
 - **Print a test coupon before a full part:** one cutout and one post or insert.
   Name the single parameter to tune first, usually the press-fit cutout, and the
-  step size, usually ±0.05 mm.
+  step size, usually ±0.05 mm. Better, put a *range* on one coupon — five sizes
+  in 0.10 mm steps, engraved — so one small print settles the number instead of
+  a bisection over several prints.
+
+### An FDM hole is not the hole you modelled
+
+The fit allowance in the table above is the clearance the *part* needs. It is
+not a print allowance, and adding only the fit allowance is how a press fit
+reaches a print too tight to assemble.
+
+An FDM hole comes out roughly 0.1 to 0.3 mm undersized, from extrusion width and
+thermal shrink, and more still when the hole is a **first-layer feature on the
+bed**, where squash-out closes it further. So:
+
+- Carry an explicit `fdm_hole_shrink` parameter next to the fit allowance, and
+  assert against the **predicted printed** size, not the modelled one. A check
+  on the modelled number cannot fail for the reason you care about.
+- Put a lead-in chamfer on the entry face. It guides the part in and moves the
+  squashed first layer off the critical dimension. Bound it against whatever
+  flat seat the mating part lands on.
+- `fdm_hole_shrink` is a property of the printer, not the design. Get it from a
+  coupon; do not inherit a number from another project's parameter block.
+
+Incident: a keyboard plate modelled its 14.0 mm switch cutout at nominal + 0.15,
+printed face-down, and came out too tight to clip a switch into
+(`kb/keyboards/mx-switch-geometry.md`).
+
+### Never dry-fit against an FDM stand-in for a fabbed part
+
+A printed mock of a PCB, a sheet-metal bracket, or a moulded part does not hold
+the tolerances the real one does, and the mismatch shows up as an apparent error
+in *your* geometry. The tell is a discrepancy far larger than any dimension in
+your stack-up.
+
+Before believing a physical measurement, check that every mating feature's
+clearance exceeds the mock's own process tolerance. If it does not, the mock
+cannot test that fit — open its features up, or wait for the real part.
+
+Incident: a switch's Ø3.85 and Ø1.60 locating posts have 0.069 and 0.051 mm of
+clearance in a fabbed board. An FDM mock of that board could not accept them at
+all, leaving the switch 2.9 mm proud and the enclosure looking ">1 mm off" in a
+dimension that was in fact exact.
+
+### Spec-equal mating dimensions have zero margin
+
+When a part's own dimension equals the spec gap your enclosure provides — a
+switch whose base-to-flange height equals the specified plate-to-board distance,
+say — the part is stopped by two faces at the same instant and there is nowhere
+to put a tolerance.
+
+Two obligations. Assert the equality numerically, so it cannot drift silently
+into a revision. And on FDM, choose a **layer height that divides the
+dimension**: 5.00 mm is exactly 25 layers at 0.20 mm and 31.25 at 0.16 mm, and
+the second quantizes the seat face 0.04 to 0.12 mm away from spec.
 - Give each mirrored half its own parameter instance, so fits can be adjusted
   per side.
 
