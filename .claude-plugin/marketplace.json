@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "hw-forge",
+  "description": "Single-plugin marketplace for hw-forge, the gated hardware design pipeline.",
+  "owner": {
+    "name": "calebbarzee"
+  },
+  "plugins": [
+    {
+      "name": "hw-forge",
+      "description": "Gated, agent-orchestrated hardware design pipeline: code-generated KiCad + code-CAD enclosures, machine-checked exit gates, and a compounding knowledge base.",
+      "author": {
+        "name": "calebbarzee"
+      },
+      "category": "development",
+      "source": "./"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ From a Claude Code session:
 
 ```
 /plugin marketplace add /path/to/hw_forge
-/plugin install hw-forge
+/plugin install hw-forge@hw-forge
 /hw-preflight
 ```
 
@@ -127,7 +127,7 @@ As a plugin, from a Claude Code session:
 
 ```
 /plugin marketplace add /path/to/hw_forge
-/plugin install hw-forge
+/plugin install hw-forge@hw-forge
 ```
 
 To work on the plugin itself, symlink the skill into your user skills directory
@@ -137,8 +137,10 @@ instead:
 ln -s /path/to/hw_forge/skills/hw-design ~/.claude/skills/hw-design
 ```
 
-The scripts and agent definitions resolve relative to the skill directory either
-way.
+The two installs put `scripts/` in different places. As a plugin it is
+`${CLAUDE_PLUGIN_ROOT}/scripts/`. Symlinked, it is the `scripts/` directory
+beside the `hw-design` skill. The skill states the rule, and the orchestrator
+resolves the root once and passes it into every agent prompt.
 
 Two environment variables are optional. `HW_FORGE_KB_ROOTS` adds knowledge-base
 roots. `KICAD_ROOT` points at a KiCad install that the discovery logic does not

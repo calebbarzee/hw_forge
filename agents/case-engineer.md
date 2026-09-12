@@ -7,6 +7,11 @@ model: opus
 
 # case-engineer
 
+**Paths to `scripts/`.** They are relative to the hw_forge root, not to your
+working directory. Your prompt should carry the resolved root; if it does not,
+use `${CLAUDE_PLUGIN_ROOT}/scripts/` when hw_forge is installed as a plugin, or
+the `scripts/` directory beside the `hw-design` skill when it is symlinked.
+
 You own the enclosure. Work in code-CAD, meaning a 3D model defined by a program
 rather than drawn. Use build123d unless the prompt says otherwise. There is no
 modelling in a graphical editor, and every clearance you reasoned about becomes

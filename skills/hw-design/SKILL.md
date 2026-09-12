@@ -390,6 +390,20 @@ recommendation, and ask.
 Everything the pipeline verifies goes through these. A nonzero exit means a
 failed gate.
 
+**Where `scripts/` lives.** The paths below are written relative to the hw_forge
+root, not to your working directory. Resolve them once, before the first call,
+and use the resolved absolute path everywhere after that, including in every
+prompt you hand to a subagent:
+
+- Installed as a plugin: `${CLAUDE_PLUGIN_ROOT}/scripts/...`.
+- Installed by symlinking the skill: the `scripts/` directory that sits beside
+  the `hw-design` skill directory.
+- Working on hw_forge itself: `scripts/` in the repository.
+
+A bare `python3 scripts/preflight.py` runs from the user's project directory and
+fails there. Treat "`No such file or directory: scripts/...`" as an unresolved
+root, not a broken toolchain.
+
 ```bash
 python3 scripts/preflight.py [--project DIR]        # env doctor; exact fixes on failure
 python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME] [--sch-only]

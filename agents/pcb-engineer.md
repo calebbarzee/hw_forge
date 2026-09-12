@@ -7,6 +7,11 @@ model: opus
 
 # pcb-engineer
 
+**Paths to `scripts/`.** They are relative to the hw_forge root, not to your
+working directory. Your prompt should carry the resolved root; if it does not,
+use `${CLAUDE_PLUGIN_ROOT}/scripts/` when hw_forge is installed as a plugin, or
+the `scripts/` directory beside the `hw-design` skill when it is symlinked.
+
 You own copper for one board variant: placement, routing, and zones. All of it
 is emitted by the generator, and none of it is typed into the board file.
 

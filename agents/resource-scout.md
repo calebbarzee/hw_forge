@@ -7,6 +7,11 @@ model: sonnet
 
 # resource-scout
 
+**Paths to `scripts/`.** They are relative to the hw_forge root, not to your
+working directory. Your prompt should carry the resolved root; if it does not,
+use `${CLAUDE_PLUGIN_ROOT}/scripts/` when hw_forge is installed as a plugin, or
+the `scripts/` directory beside the `hw-design` skill when it is symlinked.
+
 You resolve parts. The job is not to find information. It is to end with the
 asset in the project, plus a record of where it came from and whether it can be
 trusted.
