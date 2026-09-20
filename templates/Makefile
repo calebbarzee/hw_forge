@@ -8,6 +8,10 @@
 #   make erc        the electrical rule check (ERC) only: the phase-3 gate,
 #                   which needs no board
 #   make check      validate only, no regeneration  <- the phase-4 gate
+#   make fpcheck    every footprint against its declared package (design.py
+#                   PACKAGES); a prerequisite of `fab`
+#   make bom        BOM field completeness and board-inherent exclusion; a
+#                   prerequisite of `fab`
 #   make warnings   every surviving finding, grouped by owner; rotates the
 #                   previous report aside and diffs the finding classes against
 #                   it (or against a BASELINE=, which also fails on a new one)
@@ -18,6 +22,10 @@
 #   make case       run the enclosure's numeric checks
 #   make determinism  prove a wipe-and-rebuild reproduces the same geometry
 #   make preflight  prove the toolchain works before designing anything
+#   make export-dsn / route-freerouting / import-ses / route-krt / adopt
+#                   the autorouting bridge, manual; see references/autorouting.md
+#   make install-tools [INSTALL=1]
+#                   report (or install) the optional tools, pinned and checksummed
 #
 # The contract.  `make check` is the build's exit gate, not a report:
 # `kicad-cli pcb drc --exit-code-violations` returns 5 when anything is wrong,
@@ -121,9 +129,10 @@ $(foreach t,$(TARGETS),$(eval $(t)_NAME ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_DIR  ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_AT   := $(HERE)$(patsubst ./,,$($(t)_DIR)/)))
 
-.PHONY: all preflight erc check warnings fab renders case determinism clean \
-        scrub introspect $(TARGETS) \
+.PHONY: all preflight install-tools erc check fpcheck bom warnings fab renders case determinism clean \
+        scrub introspect export-dsn route-freerouting route-krt import-ses adopt $(TARGETS) \
         $(addprefix erc-,$(TARGETS)) $(addprefix check-,$(TARGETS)) \
+        $(addprefix fpcheck-,$(BOARDS)) $(addprefix bom-,$(BOARDS)) \
         $(addprefix warnings-,$(TARGETS)) \
         $(addprefix fab-,$(BOARDS)) $(addprefix renders-,$(BOARDS))
 
@@ -133,6 +142,11 @@ all: $(TARGETS) check
 # mistaken for a design problem.
 preflight:
 	@$(PY) $(SCRIPTS)/preflight.py --project $(HERE)
+
+# The optional tools (Freerouting, the Fabrication Toolkit, KiCadRoutingTools),
+# pinned and checksummed.  Reports by default; INSTALL=1 downloads and installs.
+install-tools:
+	@$(PY) $(SCRIPTS)/hw_install.py $(if $(INSTALL),--all,--check)
 
 # ---------------------------------------------------------------- generation
 #
@@ -225,6 +239,49 @@ warnings-$(1):
 endef
 $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
 
+# ------------------------------------------------------------ package check
+#
+# kicad_fpcheck.py: does each footprint's pad geometry match the package the
+# part is declared to be (design.py's PACKAGES table), not just whether the
+# board is internally self-consistent, which `check` already proves.  `fab`
+# depends on it the same way it depends on `check`: never export a board
+# whose footprints have not been checked against their declared packages.
+# A footprint with no declared package is checked against its own name only
+# and counted in the summary as a self-consistency check.  See
+# scripts/kicad_fpcheck.py and docs/BACKLOG.md B3.
+
+fpcheck: $(addprefix fpcheck-,$(BOARDS))
+
+define FPCHECK_RULE
+fpcheck-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_fpcheck.py $$($(1)_AT)$$($(1)_NAME).kicad_pcb \
+	  --design $$(HERE)design.py
+endef
+$(foreach b,$(BOARDS),$(eval $(call FPCHECK_RULE,$(b))))
+
+# -------------------------------------------------------------------- BOM
+#
+# kicad_bom.py audit: every sourced part carries the fields a buyer needs
+# (description, manufacturer, MPN, package, datasheet, and LCSC when the
+# assembly service is JLCPCB), and every board-inherent symbol (mounting
+# hole, fiducial, test point, logo) is excluded from the BOM.  The fields
+# live in design.py's PARTS table; the schematic emitter writes them.  `fab`
+# depends on it: a BOM with empty cells is not a fab output.
+#
+#   make bom BOM_ASSEMBLY=jlcpcb      also require an LCSC number per part
+
+BOM_ASSEMBLY ?=
+
+bom: $(addprefix bom-,$(BOARDS))
+
+define BOM_RULE
+bom-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_bom.py audit $$($(1)_AT)$$($(1)_NAME).kicad_sch \
+	  --board $$($(1)_AT)$$($(1)_NAME).kicad_pcb --design $$(HERE)design.py \
+	  $$(if $$(BOM_ASSEMBLY),--assembly $$(BOM_ASSEMBLY),)
+endef
+$(foreach b,$(BOARDS),$(eval $(call BOM_RULE,$(b))))
+
 # ---------------------------------------------------------------- fab outputs
 #
 # One self-contained directory per board: gerbers, excellon drill files split
@@ -249,7 +306,7 @@ $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
 fab: check $(addprefix fab-,$(BOARDS))
 
 define FAB_RULE
-fab-$(1): check-$(1)
+fab-$(1): check-$(1) fpcheck-$(1) bom-$(1)
 	@$$(PY) $$(SCRIPTS)/kicad_fab.py $$($(1)_AT) -o $$(FABDIR)/$(1) \
 	  --name $$($(1)_NAME) \
 	  $$(if $$(wildcard $$($(1)_AT)fab-profile.json),--profile $$($(1)_AT)fab-profile.json,)
@@ -295,6 +352,49 @@ ifneq ($(strip $(CASE_CHECKS)),)
 else
 	@echo "no CASE_CHECKS configured — skipping"
 endif
+
+# ------------------------------------------------------------------ autorouting
+#
+# The bridge to an external Specctra autorouter, for a board whose routing
+# is NOT fully scripted (references/autorouting.md has the decision rule).
+# Manual, not part of `make check`: routing.py, once adopted, is a committed
+# input like any other, and re-routing is a deliberate act, not a build step.
+# Any footprint move makes routing.py stale in full; re-run all four steps.
+#
+#   make export-dsn T=<target>
+#   make route-freerouting T=<target> [PASSES=20] [JAR=...]
+#   make import-ses T=<target> [SES=...]
+#   make adopt T=<target>
+#
+# T defaults to the first target when there is only one; name it explicitly
+# on a multi-board project.  The jar is never downloaded by make; the route
+# script prints the install command when it is missing.
+
+T ?= $(firstword $(TARGETS))
+
+export-dsn:
+	@$(KPY) $(SCRIPTS)/kicad_route.py export-dsn \
+	  $($(T)_AT)$($(T)_NAME).kicad_pcb $(DENOISE)
+
+route-freerouting:
+	@$(PY) $(SCRIPTS)/kicad_route.py route \
+	  $($(T)_AT)$($(T)_NAME).dsn -o $($(T)_AT)$($(T)_NAME).ses \
+	  $(if $(PASSES),--passes $(PASSES),) $(if $(JAR),--jar $(JAR),)
+
+import-ses:
+	@$(KPY) $(SCRIPTS)/kicad_route.py import-ses \
+	  $($(T)_AT)$($(T)_NAME).kicad_pcb \
+	  $(if $(SES),$(SES),$($(T)_AT)$($(T)_NAME).ses) $(DENOISE)
+
+# KiCadRoutingTools reads and writes the board directly: no DSN, no SES.  The
+# subcommand refills zones afterwards, which its output needs before any gate.
+route-krt:
+	@$(KPY) $(SCRIPTS)/kicad_route.py route-krt \
+	  $($(T)_AT)$($(T)_NAME).kicad_pcb $(if $(POWER_NETS),--power-nets $(POWER_NETS),) $(DENOISE)
+
+adopt:
+	@$(PY) $(SCRIPTS)/kicad_route.py adopt \
+	  $($(T)_AT)$($(T)_NAME).kicad_pcb -o $($(T)_AT)routing.py
 
 # --------------------------------------------------------------------- utility
 

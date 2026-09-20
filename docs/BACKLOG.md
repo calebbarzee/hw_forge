@@ -8,12 +8,17 @@ Each item names the gap numbers it covers in `hexpad/GAPS.md`, why it is
 deferred rather than done, and what would have to be true to close it.
 
 The criterion that put these here rather than into a harvest: a fix must be
-verifiable in the same pass that writes it. Four of the six below need a
-mechanism the pipeline does not yet have (B1, B2, B3, B5). One needs a packaging
+verifiable in the same pass that writes it. Six of the nine below need a
+mechanism the pipeline does not yet have (B1, B2, B5, B7, B8, B9). One needs a packaging
 decision (B4), and one needs a cross-project convention before it can safely
 write into someone's source (B6). Writing a doc line about any of them would
 have produced a rule with nothing behind it; a recorded gap at least states what
 is missing.
+
+B3 moved out of that group: the mechanism it was blocked on now ships
+(`scripts/kicad_fpcheck.py`, `scripts/packages.json`), so it stays in this
+file only for the part of the original gap the mechanism does not cover. See
+B3 below for exactly which part that is.
 
 B5 and B6 are the deferred halves of gaps whose doctrine did land. That
 distinction is worth preserving: the rule that stops the bug recurring is
@@ -24,10 +29,13 @@ as fixed in `hexpad/GAPS.md` and as open here.
 |---|---|---|
 | **B1** | Shipping emitter templates vs. the adapt-a-sibling doctrine | a scope decision: does hw_forge own KiCad emitters, or a documented extraction procedure and a named canonical sibling? |
 | **B2** | Two-source independence: detecting a shared ancestor | a machine-readable `lib/PROVENANCE.md`, so "these two assets cite the same URL" becomes a query on the phase-1 gate |
-| **B3** | Verifying a stock footprint against the physical part | an evidence source for physical pad geometry, such as a `kb/` library of pad geometry confirmed on a built board |
+| **B3** | Verifying a stock footprint against the physical part | *(mechanism shipped)*; open remainder: a declared-package source per part family not yet in `packages.json`, and any check on the physical unit a supplier ships |
 | **B4** | `/hw-kb` (and friends) outside a plugin install | the roadmap's plugin-packaging milestone: whether commands require a plugin install or must resolve from any project |
 | **B5** | `kicad_pourcheck.py`: island count and narrowest channel per zone | the parser decision: extend the s-expression reader to zones, tracks, vias and nets, or accept a `pcbnew`-only tool |
 | **B6** | Writing adopted placements back into a generator | a settled convention for where adopted placements live (a single `ADOPTED = {...}` in `design.py`) |
+| **B7** | Acid-trap and vias-under-parts checks on autorouted copper | a geometry check with no mechanism today: acid traps need an angle and proximity check on trace joints; vias under parts need z-aware clearance, and `kicad_geom.py` has no z data |
+| **B8** | Connector mating face against the board edge | a per-connector `mating_direction` the board file does not carry; the kb card format requires it, `kicad_geom.py` does not read it |
+| **B9** | Local wall-thickness floor in `case_verify.py` | a minimum-thickness sweep over the shell solid, which needs build123d geometry queries the check runner does not expose yet |
 
 ---
 
@@ -128,7 +136,7 @@ the one case the query flags, instead of a blanket rule nobody can satisfy.
 
 ## B3: Verifying a stock footprint against the physical part
 
-**Covers:** gap 19.
+**Covers:** gap 19. **Mechanism shipped; part of the original gap remains open.**
 
 Resolving a part to a stock KiCad footprint is the right call for cost and the
 wrong thing to call verification. hexpad resolved five parts as "reference stock
@@ -139,30 +147,66 @@ places its three signal pads at x = −2.25, +0.75, +2.25 mm: spacings of 3.0 an
 variant. It could not be checked, because the LCSC (LCSC Electronics, the parts
 distributor) datasheet was not reachable from that phase.
 
-No gate can see this. ERC does not know about pads. DRC and schematic parity
-compare the board to the schematic, not to reality. A wrong stock footprint is
-therefore invisible until a part will not sit on the pads, which is after a fab
-order and an assembly attempt.
+No gate could see this at the time. ERC does not know about pads. DRC and
+schematic parity compare the board to the schematic, not to reality. A wrong
+stock footprint was therefore invisible until a part would not sit on the pads,
+which is after a fab order and an assembly attempt.
 
-**Why deferred.** The check needs a source of truth the pipeline does not have:
-a machine-readable pad geometry for the physical part. Datasheets are PDFs, most
-of them drawings. Vendor CAD downloads are per-vendor and per-format. And
-"compare the footprint to the datasheet" is exactly the manual step the pipeline
-exists to replace.
+**What closed.** `scripts/kicad_fpcheck.py`, with `scripts/packages.json` as
+its evidence source, checks a footprint's pad geometry (count, outer span on
+both axes, pitch, and, for two-terminal chip and diode packages, the gap a
+body must bridge) against the package the design declares the part to be, in
+`design.py`'s new `PACKAGES` table (`templates/design.py`) or a `Package`
+footprint property. `--declared-only` checks package FAMILY agreement alone,
+with no dimension table needed. `agents/resource-scout.md` gate 7 requires it
+at part resolution; `agents/fab-docs-engineer.md` requires it again before any
+fab export. Two real incidents are its regression cases: a blog-documented
+agent design that specified a SOIC-8 wide flash and laid down SOP-8 narrow
+pads (`kb/parts/package-family-traps.md`), and the keyboard diode footprint
+this same workstream investigated (`kb/keyboards/diode-footprint-vs-part.md`).
 
-A partial answer exists and costs little. For every stock footprint on a
-mechanically critical part (connector, switch, module socket), record pad pitch
-and pad count against the datasheet in the provenance row: one row each, once.
-That is a discipline, not a gate. It was not added as a gate because the gate
-could never fail: nothing in the pipeline can supply the physical geometry it
-would compare against.
+The evidence source that closed it is not the one this entry originally
+proposed. Rather than a `kb/` library of pad geometry confirmed on a fabbed
+board (which only accumulates coverage for parts a project has already built),
+`packages.json` ships nominal geometry for ~26 common packages up front, each
+number cited to a JEDEC/IPC designator, a manufacturer datasheet, or KiCad's
+own stock footprint library. That covers the failure class both measured
+incidents share, a common chip, diode, or IC package family, at zero prior
+building.
 
-**To close:** pick the evidence source. The most promising is the one hw_forge
-already trusts elsewhere: parse the pads out of a board file that was fabbed and
-worked. That is the same argument that makes "local machine first" the search
-order. A small library of "pad geometry, confirmed on a built board" per part
-number, in `kb/`, would make the check real for exactly the parts anyone uses
-twice.
+**What is still open, precisely.**
+
+- **The MSK12C02 case itself is still uncovered.** `packages.json` has no
+  slide-switch or connector families; it covers chip passives, diodes, SOT/
+  SOIC/TSSOP/MSOP/QFN/DFN/TO-252. Closing the measured case needs an entry
+  added to `packages.json` for that family (the format is documented in the
+  file's own `_read_me` field), which is now cheap but is not done.
+- **The check needs a declared package to check against.** `design.py`'s
+  `PACKAGES` table is opt-in; an unfilled one means every footprint checks
+  only against its own name, which `kicad_fpcheck.py` reports honestly
+  (verdict SKIP, or an INFO note) rather than silently passing, but it is
+  still not a real check until someone fills the table in.
+- **It cannot verify the physical unit a supplier ships**, only the design
+  file's own consistency. The keyboard diode incident's root cause was a
+  supplied part that did not match its own specified package
+  (`1N4148W`/SOD-123 is nominally self-consistent across every major
+  manufacturer's datasheet), a receiving-inspection or supply-chain
+  substitution problem, not a design-file one. `kicad_fpcheck.py` closes the
+  design-file half of the incident (would the design have been internally
+  consistent) and cannot touch the other half. Closing that needs a
+  component-measurement step with hardware in the loop, which is out of
+  scope for a design-time pipeline.
+
+**To close the remainder:** add package families as they come up (slide
+switches, connectors, module sockets) rather than trying to front-load every
+package that exists; each addition costs one `packages.json` entry with a
+citation, following the file's existing shape.
+
+`scripts/kicad_fplib.py` is the path from a FAIL this script prints to a
+fabbed change: it forks the stock footprint into the project library,
+applies the correction, and records the source, so the finding closes in the
+library instead of stopping at a report (`kb/README.md`'s "where a fact
+lives" table).
 
 ---
 
@@ -275,16 +319,94 @@ named assignment.
 
 ---
 
+## B7: Acid-trap and vias-under-parts checks on autorouted copper
+
+**Covers:** a finding of the autorouting workstream (2026-09-20), not a
+`hexpad/GAPS.md` gap.
+
+`references/autorouting.md` §5 names two failure modes DRC does not catch. An
+acid-trap wedge, where a free-angle router's rip-up-and-reroute pass leaves an
+acute copper angle at a trace joint. And a via placed inside a courtyard with
+no pad there to collide with, so no DRC violation fires, only a mechanical one
+that the assembly or enclosure phase finds later. Neither has an automated
+check in this pipeline.
+
+**Why deferred.** The acid-trap check needs an angle and proximity pass over
+every trace joint, which needs the s-expression reader to parse tracks (the
+same parser decision B5 is blocked on). The via check needs to know which
+footprints have hardware below their courtyard, which is z data
+`kicad_geom.py` does not carry; `kicad_3d.py verify` reads it out of the STEP
+assembly, but only after phase 5.
+
+**To close:** settle B5's parser question first. With tracks parsed, the
+acid-trap check is a per-joint angle test against a threshold. The via check
+can then read `protrudes` from `kicad_geom.py` and flag any via inside a
+courtyard whose part protrudes on that face. Until then the mitigation is a
+rendered plot at high zoom over every autorouted corner, which is a human
+look, not a gate.
+
+---
+
+## B8: Connector mating face against the board edge
+
+**Covers:** a z_board finding reported 2026-09-20, not a `hexpad/GAPS.md` gap.
+
+A USB-C receptacle was placed with its pad end at Edge.Cuts and its mating
+face pointing inboard. DRC, courtyard checks, and the enclosure's numeric
+checks were all clean, because none of them knows which way a connector
+mates. The cable could not be plugged in.
+
+**Why deferred.** The board file carries a footprint's position and rotation,
+not its mating direction. `kb/README.md` already requires `mating_direction`
+on every connector card, in footprint-local axes, and that is the missing
+input: with it, the check is one rotation and one comparison against the
+nearest board edge. Without a machine-readable place for it that
+`kicad_geom.py` can read, the assertion has nothing to test.
+
+**To close:** put `mating_direction` in `design.py`'s part table for every
+connector (the same table B6 and the BOM contract are settling), have
+`kicad_geom.py --json` rotate it into board axes, and add a phase-4 check
+that every edge connector's mating face points outboard through the nearest
+edge within a stated distance. Until then the pcb-engineer's per-wall opening
+census states the mating direction in words for every connector, and the
+orchestrator reads it.
+
+---
+
+## B9: Local wall-thickness floor in `case_verify.py`
+
+**Covers:** a z_board finding reported 2026-09-20, not a `hexpad/GAPS.md` gap.
+
+A case agent thinned one wall section to 0.35 mm to satisfy a recess target.
+Every numeric check passed, because the checks assert clearances and
+positions, and nothing asserts a floor on the thinnest local wall.
+
+**Why deferred.** A local minimum-thickness sweep needs geometry queries over
+the shell solid (a ray or offset test across the whole surface), which
+`case_verify.py`'s registration framework does not expose. It is not a
+one-line assertion.
+
+**To close:** add a `min_wall(shell, floor_mm)` check to the framework that
+offsets the shell inward by half the floor and asserts the result is still a
+single non-empty solid, or samples the surface and measures thickness along
+the normal. Set the floor from the printability rules in
+`references/mechanical.md` (nozzle diameter times a stated multiple). Until
+then the case-engineer's report must state the thinnest wall it produced.
+
+---
+
 ## Not in this file
 
 Two things worth stating so they are not mistaken for backlog:
 
 - Every other gap from the dry run is either fixed or explicitly wontfix. Across
-  three harvest rounds, gaps 1–94: 89 fixed, four deferred outright
-  (3, 6, 11, 19 → B1–B4), and one wontfix (9, works-as-intended). Four of the 89
-  (77, 79, 81 and 83) were fixed as doctrine, with a script remainder deferred
-  to B5/B6. See `hexpad/GAPS.md` for the per-gap disposition and
-  `docs/DRYRUN-HEXPAD.md` for the verdict.
+  three harvest rounds, gaps 1–94: 90 fixed, three deferred outright
+  (3, 6, 11 → B1, B2, B4), and one wontfix (9, works-as-intended). Five of the
+  90 (19, 77, 79, 81 and 83) were fixed as doctrine and mechanism, with a
+  remainder deferred to B3, B5 or B6. Gap 19 joined that group in this
+  workstream: `kicad_fpcheck.py` and `packages.json` are the mechanism; what
+  it does not yet cover is B3's own remainder, above. See `hexpad/GAPS.md`
+  for the per-gap disposition and `docs/DRYRUN-HEXPAD.md` for the verdict.
 - The SWIG (Simplified Wrapper and Interface Generator) → IPC (inter-process
   communication) (`kipy`) migration is roadmap, not backlog. It is forced work
   with a known deadline (SWIG is deprecated in KiCad 9 and removed in 11), it is

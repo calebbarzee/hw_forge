@@ -208,6 +208,60 @@ next phase.
    component's position wrong, and for the `(model ...)` sign conventions a
    render will catch.
 
+7. **Every resolved footprint is verified against the part's declared
+   package.** Run `python3 scripts/kicad_fpcheck.py PROJECT.kicad_pcb
+   --design PROJECT/kicad/design.py` once the footprint is placed, or
+   `kicad_fpcheck.py FOOTPRINT.kicad_mod --declared-only` at resolution time
+   before a board exists. This is a different question from gate 1: gate 1
+   asks whether a footprint exists, this asks whether it is the RIGHT one for
+   the physical part.
+
+   ERC, DRC, and schematic parity cannot see this failure, because none of
+   them has a notion of a part's physical package. Measured case, from a
+   published agent-designed board: a W25Q128JVS SPI flash was specified in
+   SOIC-8 wide (7.5 mm body) and the footprint laid down was SOP-8 narrow
+   (3.9 mm body), a different, incompatible footprint family, not a
+   tolerance problem. Every design rule check passed; the mismatch was found
+   only when the files reached a fab for assembly. See
+   `kb/parts/package-family-traps.md`.
+
+   Record which package family you resolved a part to (a `PACKAGES` entry in
+   `design.py`, see the template) **before** picking its footprint, not
+   after, so `kicad_fpcheck.py` has something independent to check the
+   footprint against. A footprint checked only against its own name is a
+   self-consistency check, not a verification.
+
+   **The provenance row for a mechanically critical part (connector, switch,
+   module socket, or any part whose footprint you did not generate from a
+   verified pin table) carries the package family and the two dimensions
+   `kicad_fpcheck.py` checked**: pad outer span and either pad pitch or pad
+   inner gap, whichever the family uses. This is the same discipline
+   `docs/BACKLOG.md` B3 already asked for by hand ("record pad pitch and pad
+   count against the datasheet"); `kicad_fpcheck.py` is what makes it a
+   command instead of a manual transcription, and the row should quote its
+   output rather than re-typing the numbers.
+
+   This gate verifies a footprint against the package the design DECLARES.
+   It cannot verify the declaration itself against a physical unit a
+   supplier ships, that is a receiving-inspection problem, not a resource
+   resolution one, and `docs/BACKLOG.md` B3 still tracks it as open. Do not
+   read a clean `kicad_fpcheck.py` pass as confirmation that a real part fits
+   its pads; read it as confirmation that the footprint matches what the
+   design says the part is.
+
+   **A FAIL from this gate, or any datasheet disagreement with a stock
+   footprint, is closed by forking the footprint, never by a card alone.**
+   `scripts/kicad_fplib.py fork LIB:NAME --into kicad/lib/<project>.pretty`
+   copies the stock footprint into the project library; `set-pads` or
+   `set-model` applies the change the numbers called for; `annotate` records
+   the source and the change in the footprint's own `(descr)` and `(tags)`;
+   `provenance-row` prints the `lib/PROVENANCE.md` row. See `kb/README.md`'s
+   "where a fact lives" table. A knowledge-base card is for a part-specific
+   fact with no generic home (a pin-order variant, a marking, a supplier
+   substitution); it never substitutes for the library edit a geometry
+   finding requires, and where a card exists for the same part it points at
+   the fork and the provenance row rather than repeating the numbers.
+
 ## Traps to actively check for
 
 - **Variant pin-order divergence.** Same part family, different suffix,
@@ -357,8 +411,10 @@ Status:     every part in the spec, and whether it resolved
 Local:      what was found on this machine, by path
 Web:        what had to come from outside, with URLs
 Vendored:   each asset, with its full provenance row — 3D models included, each
-            with its bounding box and render verification — and whether it
-            landed in kicad/lib/ (production) or lib/reference/ (evidence)
+            with its bounding box and render verification; mechanically
+            critical footprints with their package family and the two
+            dimensions kicad_fpcheck.py checked; and whether it landed in
+            kicad/lib/ (production) or lib/reference/ (evidence)
 Pin tables: each table, with the two sources that agreed — flagged where both
             are transcriptions of an image primary
 Availability: per part, lifecycle status, stock, and lead time; anything NRND,

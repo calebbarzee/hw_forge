@@ -79,6 +79,20 @@ Three doctrine rules apply here; `agents/resource-scout.md` carries them in full
   both cite that image are the accepted fallback. That they were never checked
   against the primary is flagged inline in the provenance row and the report.
 
+## 3a. Close a footprint finding in the library
+
+If `kicad_fpcheck.py` fails, or a datasheet disagrees with a stock footprint's
+pads, do not stop at reporting it. Fork the footprint into the project library:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kicad_fplib.py" fork LIB:NAME --into kicad/lib/<project>.pretty
+```
+
+Apply the correction with `set-pads` or `set-model`, record the source with
+`annotate`, and paste the `provenance-row` output into `lib/PROVENANCE.md`. A
+knowledge-base card alone never closes a geometry finding; see `kb/README.md`,
+"Where a fact lives".
+
 ## 4. Vendor into the project with a provenance manifest
 
 Copy the asset into the project. Do not depend on a path outside it, and do not

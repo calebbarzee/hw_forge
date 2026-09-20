@@ -1,8 +1,8 @@
 ---
 domain: projects/zboard
-tags: [z_board, regression-fixture, split-keyboard, zmk, nice-nano, reversible-pcb, build123d, gates, mcu-flip, schematic-parity, kicad-dru, zone-min-island, 3d-models]
-source: z_board v0.4 (README.md, HISTORY.md, kicad/NOTES.md, kicad/POWER.md, case/README.md, PIPELINE.md); z_board MCU-flip and 3D-export work, 2026-09-03/04 (kicad/MCU-FLIP.md, kicad/3D-EXPORT.md)
-date: 2026-09-03
+tags: [z_board, regression-fixture, split-keyboard, zmk, nice-nano, reversible-pcb, build123d, gates, mcu-flip, schematic-parity, kicad-dru, zone-min-island, 3d-models, split-role, usb-dongle, mdbt50q, live-geometry, case-thinning]
+source: z_board v0.4 (README.md, HISTORY.md, kicad/NOTES.md, kicad/POWER.md, case/README.md, PIPELINE.md); MCU-flip and 3D-export work 2026-09-03/04 (kicad/MCU-FLIP.md, kicad/3D-EXPORT.md); combo re-spin, combo case rebuild, dongle and firmware run 2026-09-20 (HISTORY.md, kicad/combo/ASSEMBLY.md, case/README.md, kicad/dongle/ASSEMBLY.md, firmware/README.md)
+date: 2026-09-20
 confidence: verified-in-cad
 ---
 
@@ -11,8 +11,11 @@ confidence: verified-in-cad
 `/Users/calebbarzee/1_projects/dev/keyboard/z_board`
 
 A 42-key (44 with two optional thumb keys) wireless split ortholinear keyboard: nice!nano v2
-per half, ZMK, Bluetooth Low Energy (BLE) only to a Prospector dongle, per-key
-reverse-mount SK6812MINI-E lighting, 3D-printed two-shell case.
+per half, ZMK with runtime-switchable split roles (a half moves between direct BLE and a
+small USB dongle without reflashing; the Prospector dongle was dropped), per-key
+reverse-mount SK6812MINI-E lighting, 3D-printed two-shell case. Since 2026-09-20 the
+project also carries `kicad/dongle/` (25 x 18 mm MDBT50Q-1MV2 USB dongle) and
+`case/zboard_dongle_case.py` (friction-fit sleeve).
 
 Every artifact is code-generated and every phase has a machine-checkable exit gate: no GUI
 step anywhere, no autorouter, and copper is never hand-edited. hw_forge is the
@@ -23,7 +26,15 @@ z_board's current gate numbers from the outside. If `kicad_gate.py` does not rep
 0/0/0/0 on all four projects, the regression is in the genericized script; z_board's own
 gate numbers are the reference.
 
-## Gate state (2026-09-03, KiCad 10.0.5)
+## Gate state (re-verified 2026-09-20, KiCad 10.0.5)
+
+Combo re-spun 2026-09-20 (nice!nano 1.27 mm inboard so the module body sits 0.635 mm
+inside Edge.Cuts instead of 0.635 mm over it, Edge.Cuts corners r 3.0, SW_PWR decoupled
+from MCU_C, SW_RST cleared from under the module, Fab-layer module envelope rects). Gate
+unchanged at 0/0/0/0 with parity enforced 5/5; halves untouched. The new `kicad/dongle`
+project gates 0/0/0/0 too under the same JLCPCB floors as the combo (0.09 clearance,
+0.15 via annular, PTH hole-to-hole 0.45 and hole-to-copper 0.28 in `dongle.kicad_dru`;
+vias 0.6/0.3), re-run by the orchestrator 2026-09-20; see `kicad/dongle/ASSEMBLY.md`.
 
 All four boards gate clean at **every severity**, not just error: violations 0,
 unconnected 0, schematic parity 0, parity enforced 5/5 (`extra_footprint`,
@@ -42,7 +53,7 @@ was never actually a gate).
 This supersedes the card's previously recorded "documented surviving warnings" (two
 `npth_inside_courtyard` and one `isolated_copper` on the halves). The MCU-flip work
 (2026-09-03) retired both:
-- `npth_inside_courtyard` was a dead demotion — reverting it to error and rebuilding fired
+- `npth_inside_courtyard` was a dead demotion: reverting it to error and rebuilding fired
   nothing on any of the four boards. Removed from all three generators, with one
   footprint-scoped `.kicad_dru` rule (`courtyard_clearance (min -8mm)` conditioned on
   `MCU1`) taking its place for the five real MCU-courtyard overlaps.
@@ -73,7 +84,7 @@ renders generated and assertion-gated.
   offset from each other purely in y by one full pitch (`MCU_GRID_DX = 0`,
   `MCU_GRID_DY = 2.54`). Which grid a build uses is set by which face the module body is
   on, not by which half it is, so moving the module to the back face is a re-assignment
-  between the two grids with **zero copper change** — `kicad_digest.py --compare` against
+  between the two grids with **zero copper change**: `kicad_digest.py --compare` against
   the pre-flip board reports exactly one differing line, a corrected footprint `descr`
   string, no geometry.
 
@@ -88,7 +99,11 @@ renders generated and assertion-gated.
 | `kicad/POWER.md` | rail topology, R1 reasoning, current budget, the 11-row rejected-protection table |
 | `kicad/design.py` | the one logical design: nets, chain order, pin tables, `NRF_PORT` |
 | `kicad/Makefile` | the gate contract (`make`, `make check`, `make fab`, `make renders`) |
-| `case/README.md`, `case/zboard_case.py` | build123d generator + 65 numeric geometry checks |
+| `case/README.md`, `case/zboard_combo_case.py`, `case/checks_combo.py` | combo case generator, 242 checks, live board geometry |
+| `case/zboard_dongle_case.py`, `case/checks_dongle.py` | dongle sleeve, 121 checks |
+| `case/README-legacy.md`, `case/zboard_case.py` | superseded single-hand case, 65 checks |
+| `kicad/dongle/` (SPEC, POWER, PINMAP, ASSEMBLY, design.py, gen_sch.py, gen_pcb.py, routing.py) | USB dongle project, own Makefile targets |
+| `firmware/` | ZMK config, shields, custom dongle board, build.sh |
 | `CLEANUP.md` | repo-hygiene manifest (manifest-then-execute pattern) |
 | `kicad-agent-workflow.md` | the interface survey that chose kicad-cli as the gate |
 | `PIPELINE.md` | the plan hw_forge implements |
@@ -138,25 +153,47 @@ slot passes 0.432 mm from the other face's socket pad). 123 placements, 101 part
 build. Row nets move to D2–D5, so this board's ZMK devicetree is not the halves'. Full
 rationale in `kicad/NOTES.md`; build steps in `kicad/combo/ASSEMBLY.md`.
 
-## Case: fastening summary
+## Case (combo, 2026-09-20): live geometry, 14.85 mm
 
-Four printed parts (`{left,right} × {top,bottom}`), build123d, 65 numeric checks on every
-run. Top shell = integrated MX plate + full perimeter wall + six M2 standoffs; bottom shell
-= a lid dropping into a 1.2 mm rabbet, carrying six bosses, the counterbores, the reset
-poke-hole and the battery bay.
+`case/zboard_combo_case.py` + `case/checks_combo.py`, gated by hw_forge
+`case_verify.py`, 242 numeric checks per run, both hands. Every board number is read from
+`kicad/combo/zboard_combo.kicad_pcb` through `kicad_geom.py` at generation time; a
+parse-and-compare check replaced the hand-transcribed constants of the old
+`zboard_case.py`, which had drifted 16.1 mm on J1 (that generator and its README are kept
+as `case/README-legacy.md`, superseded).
 
-Clamp scheme: M2 × 14 from below → counterbore in the floor → up the boss → through the
-board's own Ø2.2 mm clearance hole → into an M2 heat-set insert (Ø3.2 outer diameter ×
-4.0 long) in the top-shell standoff. No screw or plastic touches copper. Ø5.6 posts
-(1.2 mm wall around the insert), 4.4 mm bore with a 0.6 mm deck cap.
+| term | value |
+|---|---|
+| assembled height | 14.85 mm (was 17.20) |
+| outer footprint | 127.5 x 91.4 mm top shell; bottom tray 125.3 x 89.2 seats in the rabbet |
+| wall / plate / floor | 2.00 / 1.40 / 2.05 mm |
+| PCB to wall gap | 0.60 mm; cavity corner r = PCB r 3.0 + gap = 3.60 |
+| lid gap | 0.30 mm per side |
+| MCU standoff | 1.00 mm default (module on trimmed pins), 1.90 socket alternate gives 15.75 |
+| battery | 303450 3.0 mm + 0.30 swell default; 503450 5.0 + 0.40 alternate gives 16.55 |
+| fastening | M2 x 12 from below into heat-set inserts, 3.75 mm engagement |
+| USB port | bottom-open notch 16.04 wide spanning both MCU grids, sized for a plug overmold |
 
-Stack-up: `(floor 2.60 − counterbore 2.10) + cavity 8.00 + PCB 1.60 = 10.10 mm` of travel →
-3.90 mm engagement. The spec's M2×8 was written for a 4.5 mm cavity and is 2.1 mm short
-of even reaching the insert.
+Floor is MCU-driven at the default standoff (module tip z -7.00, deep floor z -7.80);
+nothing sits under the module (ledger in `kicad/combo/ASSEMBLY.md`, asserted by the
+case). Under-module ledger, module-envelope-vs-wall, corner tangency formula and the
+notch rule are cards in `kb/keyboards/` (2026-09-20). Exports
+`case/export/zboard_combo_{left,right}_{top,bottom}.{step,stl,3mf}`; the printable PCB
+mock fits the cavity with 0 boolean intersection. (needs-verification) in hardware: no
+combo v2 boards or prints exist yet.
 
-Case outer 127.9 × 91.8 × 17.2 mm per half; plate top at z = +5.00 (z = 0 is the PCB top
-face); cavity 8.00 mm sized by a 503450 ~1000 mAh cell (5.0 + 0.4 swell) over a
-2.60 mm parts clearance. Both shells print support-free, reference face down.
+Dongle sleeve: `case/zboard_dongle_case.py`, 121 checks, 27.00 x 21.00 x 7.06 mm, mouth
+9.54 x 3.86 flush with the USB-C mating face (recess 0.0), wall 1.20.
+
+## Firmware (2026-09-20)
+
+`firmware/` builds against the local ZMK branch `feat/runtime-split-role` (Zephyr
+v4.1.0+zmk-fixes, board `nice_nano//zmk`, Docker `zmk-dev-arm:4.1-branch`, ZMK mounted at
+/zmk-src) via `firmware/build.sh`. Left half `ZMK_SPLIT_ROLE_SWITCHABLE`, right half
+`ZMK_SPLIT_BLE_PERIPHERAL_CENTRALS=2`, `zboard_dongle` shield (mock kscan,
+`CENTRAL_PERIPHERALS=2`) on `nice_nano//zmk`, `xiao_ble//zmk` and the custom
+`zboard_dongle_mdbt50q` board. Nine images in `firmware/out/`. The ZMK branch is local
+only and its owner may still rewrite it.
 
 ## The combo now exports a populated assembly
 
@@ -180,10 +217,11 @@ and its four outputs are retained, unreferenced, so the anecdote has something t
   So `courtyards_overlap` on the combo board can only ever compare its 6 stock mounting
   holes; it is effectively unenforced across the other 117 placements. Zero violations
   there is silence, not a clean bill of health.
-- Case not yet updated for the combo board. It is still built for the halves' MCU position
-  (2.975, 59.5) and does not fit the combo's grid geometry (grid A at (2.34, 59.5), grid B
-  2.54 mm south of it). Also: USB cutout 2.54 mm taller, actuator slot moves, battery
-  pocket and reset poke-hole move to the corner east of the module.
+- Combo v2 (2026-09-20 re-spin) not yet ordered; the v1 combo boards in hand do not fit
+  any case (module 0.335 mm into the wall). Dongle boards not ordered; its UF2 bootloader
+  must be flashed once over the module's castellated SWD pads.
+- `firmware/build.sh` west manifest points at a local branch; a force-update upstream is
+  picked up silently on the next `west update`.
 - Boards not yet ordered; no hardware exists, hence `verified-in-cad`, not
   `verified-in-hardware`, on every z_board-sourced card.
 - SWIG `pcbnew` dependency must go before KiCad 11.

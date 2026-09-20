@@ -70,7 +70,8 @@ paper.
 passed is a claim, not evidence. The orchestrator runs `kicad_gate.py` between
 waves and reads the JSON.
 
-**Locked decisions carry a barrier clause.** Every agent prompt repeats the
+**Locked decisions carry a barrier clause, and mid-run choices climb an
+escalation ladder.** Every agent prompt repeats the
 user's locked choices verbatim and marks them as not open for renegotiation. If
 a locked choice makes a gate unreachable or forces a materially worse design,
 the agent stops and returns a barrier report: what is blocked, why, the options
@@ -87,7 +88,18 @@ inline and what to delegate, writes the agent prompts, runs the waves, and
 re-verifies each gate before opening the next phase. Use it for new boards and
 for structural changes to existing ones.
 
-**Five slash commands** are single-phase entry points over the same scripts, for
+Spec lock is an intake, not a summary. The skill asks a question bank in one
+batch, covering the device's objective, where each part goes and what the user
+touches, the rules the board must follow, and the package of every part that is
+not a fixed module. Each question carries a default or is marked as needing an
+answer, so "take the defaults" is a complete reply. After that the run is
+autonomous, with research and bounded implementation fanned out to parallel
+agents, until a decision meets the escalation ladder: small choices are logged,
+choices a user would care about are flagged at the next phase boundary, and
+anything that changes a locked decision, adds or removes a part, moves the
+outline, layer count, or cost past a threshold, or blocks fab stops and asks.
+
+**Six slash commands** are single-phase entry points over the same scripts, for
 when you have a project already and want one thing done.
 
 | Command | What it does |
@@ -96,6 +108,7 @@ when you have a project already and want one thing done.
 | `/hw-validate` | Runs the gate on a project and groups any failures by cause. |
 | `/hw-research` | Acquires datasheets, footprint libraries, and reference designs, searching the local machine before the web. Vendors them with a provenance manifest and verifies pin tables against two independent sources. |
 | `/hw-export` | Regenerates fab outputs and renders, and asserts the artifacts are real. |
+| `/hw-bom` | Audits a schematic's bill-of-materials fields, fills them from researched sources through `design.py`, and keeps board-inherent geometry such as mounting holes and fiducials off the parts list. |
 | `/hw-kb` | Searches the knowledge base, or writes a lesson into it. |
 
 Run `/hw-preflight` once on a new machine. Reach for the others as needed.
@@ -130,6 +143,17 @@ As a plugin, from a Claude Code session:
 /plugin install hw-forge@hw-forge
 ```
 
+Then the optional tools, in one command that reports first and installs only
+when asked:
+
+```bash
+python3 scripts/hw_install.py --check
+```
+
+```bash
+python3 scripts/hw_install.py --all
+```
+
 To work on the plugin itself, symlink the skill into your user skills directory
 instead:
 
@@ -153,8 +177,46 @@ find on its own; discovery checks the platform defaults first, including
   imported.
 - Python 3.
 - build123d, for enclosure work only.
+- For boards that use the autorouting bridge: KiCadRoutingTools (the default
+  backend, MIT, with its own small Python environment) and, as a fallback,
+  Freerouting with a Java 25 runtime. For JLCPCB assembly files: the
+  Fabrication Toolkit plugin. `python3 scripts/hw_install.py --check` reports
+  which are present; `--all` installs all three, pinned to a version and a
+  SHA-256. `/hw-preflight` reports a missing router as a warning, not a
+  failure. Nothing installs on its own.
 
 `/hw-preflight` reports which of these is missing or wrong.
+
+## Checks the four gates cannot make
+
+ERC, DRC, schematic parity, and the unconnected count prove a board is
+consistent with its schematic. They do not prove a footprint is the right one
+for the part in the bill of materials. A flash chip chosen in a wide SOIC-8 with
+narrow SOP-8 pads passes all four and is caught by the assembly house, after
+every other file agrees with the wrong footprint (`kb/runs/`). So
+`kicad_fpcheck.py` checks every footprint's pad geometry against the package
+the design declares in `design.py`, with a cited table of nominal dimensions in
+`scripts/packages.json`, and `make fab` depends on it.
+
+Routing follows the same split. Regular repeated cells such as a key matrix are
+routed by the generator as named constants. Irregular placement with many nets
+routes the critical nets by script, locks them, hands the rest to an external
+autorouter through `kicad_route.py`, and adopts the result back into the
+generator as a committed routing file, so the board stays a function of
+`design.py` and that file. `skills/hw-design/references/autorouting.md` has the
+decision rule.
+
+## The extension ecosystem
+
+KiCad has a large plugin and MCP server ecosystem, and hw_forge's own scripts
+already cover the surface most of it exposes: `kicad-cli`, headless `pcbnew`,
+and project-file patching. `skills/hw-design/references/kicad-ecosystem.md`
+surveys what exists with a verdict for each: adopt, evaluate, or skip. Adopted:
+`kicad-cli` for every check and export, the Fabrication Toolkit plugin for
+JLCPCB assembly files, and Freerouting as the autorouting bridge. Generic KiCad
+MCP servers are a deliberate skip. They duplicate the scripts and open a channel
+for an agent to edit CAD files live, which is the rule this pipeline exists to
+prevent.
 
 ## Status
 

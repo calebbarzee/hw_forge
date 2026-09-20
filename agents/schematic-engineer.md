@@ -22,10 +22,19 @@ ERC is KiCad's electrical rule check. DRC is its design rule check on a board.
 - **`design.py`**, the single logical source. It holds nets, the part list, pin
   maps, topology (matrix, chain, bus), and every named constant that describes
   intent rather than geometry. Everything downstream imports from here, and no
-  design fact may exist in two places.
+  design fact may exist in two places. That part list is two tables: `PARTS`,
+  the full sourcing field set (description, manufacturer, MPN, package,
+  datasheet, LCSC) for everything a buyer must order, and `BOARD_INHERENT`,
+  the kind (mounting hole, fiducial, test point, logo, net tie, edge
+  connector) for everything that is a property of the board rather than a
+  component someone sources.
 - **The schematic emitter**, which turns `design.py` into `.kicad_sch`. Symbols
   come from installed KiCad libraries where the part exists, and from
-  project-local generated ones where it does not.
+  project-local generated ones where it does not. It also writes every
+  `PARTS` field into its symbol as a same-named property, and sets `in_bom
+  no` on every `BOARD_INHERENT` symbol's placement, so the bill of materials
+  a fab export produces lists what someone has to buy and solder, not the
+  board's own holes.
 - **Power topology, and the decision record for it.** This is your phase, not
   the PCB phase, because power design changes the netlist: adding a series
   element splits a net and moves where a feed terminates.
@@ -90,6 +99,33 @@ ERC is KiCad's electrical rule check. DRC is its design rule check on a board.
    report a missing driver. Carry the electrical type per pin in the same table
    as the pin numbers: `power_in`, `power_out`, `input`, `bidirectional`.
 
+6. **`kicad_bom.py audit` passes, alongside ERC 0.** This is part of your
+   gate, not fab-docs-engineer's alone, because the fields it checks come
+   from `design.py`'s `PARTS` and `BOARD_INHERENT` tables, which you own, and
+   the emitter writes them into the schematic, which you own:
+
+   ```bash
+   python3 scripts/kicad_bom.py audit PROJECT_DIR/PROJECT.kicad_sch \
+       [--board PROJECT_DIR/PROJECT.kicad_pcb] --design PROJECT_DIR/design.py \
+       [--assembly jlcpcb]
+   ```
+
+   Every part in `design.py`'s `PARTS` table gets its full field set written
+   into the schematic symbol as a property of the same name: Description,
+   Manufacturer, MPN, Package, Datasheet, LCSC. A description is a sentence
+   a buyer can act on (function, key rating, package), never the value
+   repeated. Every part in `BOARD_INHERENT` (a mounting hole, fiducial, test
+   point, logo, net tie, or edge connector) gets `in_bom no` on its
+   schematic instance, a bare boolean on the symbol placement, not a named
+   property. See `templates/design.py`'s "Board-inherent kinds" and "Part
+   fields" sections for the field contract in full, with the exact
+   s-expressions KiCad 10 uses for both.
+
+   A board-inherent part left at the schematic's own default (`in_bom yes`)
+   is exactly the measured failure this gate exists to catch: a real
+   project's exported BOM listed its four mounting holes as parts to source,
+   because nothing had told the emitter otherwise.
+
 ## Rules
 
 - Read `references/electronics.md` before deciding power topology, and recall
@@ -132,9 +168,12 @@ just run.
 
 ```
 REPORT
-Status:     the gate command you ran, and its output verbatim
+Status:     the gate command you ran, and its output verbatim, plus
+            kicad_bom.py audit's command and output verbatim
 Changed:    files touched, what changed in each
-Numbers:    ERC count before/after; net count, part count, spare pins
+Numbers:    ERC count before/after; net count, part count, spare pins;
+            kicad_bom.py audit: sourced parts complete, board-inherent
+            parts correctly excluded
 Decisions:  anything you decided that was not locked, and why
 Rejected:   what you tried or considered and dropped, with the evidence
 For the next agent (PCB):

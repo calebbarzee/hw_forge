@@ -144,7 +144,20 @@ wrong. Re-read the records.
   carry cached fills, and nothing revalidates until KiCad reopens the file. When
   someone else has hand-edited it, see the adoption path below; the answer is a
   defined re-entry procedure, not a refusal.
-- **No autorouter**, unless the prompt explicitly permits one.
+- **Autorouting is a spec-driven decision, not a blanket prohibition.** The
+  intake records whether it is permitted for this board. Absent a locked
+  answer, decide from the topology: a regular, repeated cell (a matrix, a
+  chain, a connector row) is scripted, full stop, an autorouter is strictly
+  worse there. An irregular placement with many nets and no repeated cell to
+  derive a lane order from is the hybrid flow: script the critical nets
+  yourself (power, differential pairs, the crystal, USB), lock them, autoroute
+  the rest, and adopt the result back into the generator. The decision rule,
+  the hybrid flow, the design-rule handoff, and the tool comparison are all in
+  `references/autorouting.md`. `scripts/kicad_route.py` is the bridge
+  (`export-dsn` / `route` / `import-ses` / `adopt`); `references/kicad-api.md`
+  §10 has the DSN/SES traps. Whichever way the decision goes, say so in your
+  report, this is exactly the kind of decision the report shape below asks
+  you to record under **Decisions**.
 - Load `references/kicad-api.md` for zone filling, island removal by area
   against connectivity, pad connection mode, project-file severity patching
   after save, and s-expression coordinate conventions. Load
@@ -154,6 +167,11 @@ wrong. Re-read the records.
 - **Proto slice first:** gate one repeated cell before instantiating N.
 - Read the real geometry with `python3 scripts/kicad_geom.py BOARD --json`
   rather than trusting a spec table.
+- If `kicad_geom.py`'s courtyard or body_bbox report shows a footprint whose
+  body looks implausible for its part, or after adopting a hand placement,
+  confirm it with `python3 scripts/kicad_fpcheck.py BOARD --design design.py`.
+  You do not own footprints or part resolution: hand a mismatch back to
+  resource-scout in your report rather than swapping the footprint yourself.
 - A relaxed design rule is allowed only if it is written into the generated
   rules file, justified in the project notes, and above every candidate fab's
   stated minimum. **Never demote a severity to make a violation disappear
@@ -226,6 +244,13 @@ against the current board.
 Two things phase 6 cannot get anywhere else, because only the board phase can
 see them.
 
+**Every edge connector's mating face points outboard.** State it in the
+census in words, per connector: which edge, which direction the plug enters.
+A receptacle placed pad-end-at-edge with its mating face inboard passes DRC,
+courtyard, and every numeric case check, and cannot be plugged in
+(`docs/BACKLOG.md` B8, measured on z_board 2026-09-20). Until a script checks
+it, you are the check.
+
 **A per-wall opening census.** For each board edge, hand over every feature that
 will need an opening in that wall, with its in-plane span and its z band.
 
@@ -294,4 +319,10 @@ For the next agent:
   - budget advice: what is tight, what has slack, which corner is the binding
     constraint and what makes it so
   - the ordering rules that keep the layout planar, stated as rules
+  - if any routing was autorouted: the routing-file handoff, the path to the
+    adopted routing module (e.g. `kicad/routing.py`), the board digest it was
+    adopted from (`kicad_digest.py`), which nets were scripted-and-locked
+    versus autorouted, and an explicit statement of the staleness rule for
+    whoever touches placement next: any footprint move invalidates the whole
+    file, not just the routes near it. See `references/autorouting.md` §2.
 ```

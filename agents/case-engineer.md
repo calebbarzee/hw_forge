@@ -244,6 +244,12 @@ Name the method in the report line, so the rejection is reproducible.
   seats, and pass the screw through its own clearance hole.
 - Tolerances are parameters. Document the one the user will tune first, such as
   a press-fit cutout or a lid gap, with a tuning step size.
+- **State the thinnest wall you produced, as a number, and hold it above the
+  printability floor in `references/mechanical.md`.** A wall section thinned
+  to 0.35 mm to meet a recess target passed every numeric check on z_board
+  (2026-09-20), because nothing asserts a local minimum. Until
+  `case_verify.py` grows that check (`docs/BACKLOG.md` B9), measure it and
+  report it.
 - **Prefer the printable variant as the default.** A modelled alternative that
   cannot be FDM-printed without support is fine to ship as an option, but say
   which is the default and why.

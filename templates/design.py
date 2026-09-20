@@ -174,6 +174,191 @@ MOUNT_HOLES = [(x, y) for y in MOUNT_HOLE_YS for x in MOUNT_HOLE_XS]
 
 
 # =========================================================================
+# Package declarations: what a part IS, independent of what footprint got
+# laid down for it
+# =========================================================================
+# `scripts/kicad_fpcheck.py` verifies a footprint's pad geometry against the
+# physical package a part is supposed to be.  Without this table it can only
+# compare a footprint against ITS OWN name, which is a self-consistency
+# check, not a real one.  This table is what makes the check independent:
+# the design says what the part is; the footprint is checked against that,
+# not against itself.
+#
+# One flat dict, keyed by reference first, then by value.  A key is a
+# packages.json family id (see that file's own `_read_me` field for the
+# format and the full package list): "SOD-123", "SOIC-8-N", "SOIC-8-W",
+# "0603", and so on.
+#
+#   python3 scripts/kicad_fpcheck.py board.kicad_pcb --design design.py
+#
+# This is the check that would have caught a real incident: an agent-
+# designed board specified a SOIC-8 wide (7.5 mm body) flash chip and laid
+# down SOIC-8/SOP-8 narrow (3.9 mm body) pads for it.  Every design rule
+# check passed, because DRC has no notion of a part's physical package; the
+# mismatch was found only after the files reached a fab for assembly.  See
+# `kb/parts/package-family-traps.md`.
+PACKAGES = {
+    # "<ref>": "<PackageFamilyId>",      # e.g. "U3": "SOIC-8-W"
+    # "<value>": "<PackageFamilyId>",    # e.g. "W25Q128JVSIQ": "SOIC-8-W"
+}
+
+
+# =========================================================================
+# Board-inherent kinds: geometry that is never a bill of materials (BOM) row
+# =========================================================================
+# A mounting hole is a property of the board, not a component someone
+# sources and solders onto it.  A BOM lists what still has to be bought and
+# assembled onto a bare board; a hole is neither.  Measured failure this
+# table exists to prevent: exporting a real project's BOM listed its four
+# mounting holes as line items to source, right alongside its capacitors and
+# switches (`.tmp/hexpad_bom_probe.csv`, read 2026-09-20).
+#
+# Six kinds are declared board-inherent, and none of them is ever a sourced
+# part:
+#
+#   mounting_hole   a hole that takes a fastener; nothing is placed there
+#   cutout          a non-plated opening cut into the board (a USB notch, a
+#                   speaker port) that mounts or solders no part.  Plain
+#                   board-edge geometry with no footprint at all needs no
+#                   entry here -- it was never a symbol and kicad-cli never
+#                   sees it.  Only give a cutout an entry when a project
+#                   represents it with an actual footprint (an NPTH ring, a
+#                   keepout marker with a reference designator).
+#   fiducial        an optical reference mark for pick-and-place alignment
+#   test_point      a bare pad or via meant for a probe, not a part
+#   logo            silkscreen or copper artwork with no function
+#   net_tie         a zero-ohm copper bridge that is board fabric, not a
+#                   discrete part
+#   edge_connector  a card-edge connector formed by the board's own copper
+#                   and gold fingers, with no separate part to source
+#
+# If a real component sits in one of these locations -- a mounting hole that
+# also carries a press-fit standoff, a test point that is actually a
+# populated pogo-pin header -- that location is a sourced part, not a
+# board-inherent one, and belongs in PARTS below instead of here.
+#
+# Declare the kind per reference, falling back to value, same lookup order
+# as PACKAGES.  `scripts/kicad_bom.py audit` also applies a reference-prefix
+# and library-name heuristic (H*, FID*, TP*, LOGO*, MountingHole:*,
+# Fiducial:*, TestPoint:*) so an undeclared board-inherent part is still
+# caught, but an entry here always wins over the heuristic.
+BOARD_INHERENT = {
+    # "<ref>": "mounting_hole",        # e.g. "H1": "mounting_hole"
+}
+
+# How the schematic emitter and the board emitter each act on BOARD_INHERENT,
+# stated once here because both halves have to agree or the BOM audit fails
+# on a part nobody meant to exclude.
+#
+# Schematic side: `kicad-cli sch export bom` drops any symbol instance whose
+# placement carries `(in_bom no)`.  This is a bare boolean directly on the
+# symbol instance, not a named property, and it is set per-instance, not
+# inherited from the library symbol's own default -- verified against a real
+# project's placed symbols, where every instance carried `(in_bom yes)` even
+# though the *library* copy of `Mechanical:MountingHole` in the same file's
+# `lib_symbols` cache said `(in_bom no)`.  KiCad does not enforce the
+# library's default at placement time; the emitter must set it explicitly:
+#
+#   (symbol
+#       (lib_id "Mechanical:MountingHole")
+#       (at 444.5 368.3 0)
+#       (unit 1)
+#       (exclude_from_sim no)
+#       (in_bom no)              <- board-inherent: excluded here
+#       (on_board yes)
+#       (dnp no)
+#       ...)
+#
+# Board side: the footprint's `(attr ...)` list carries `exclude_from_bom`,
+# and, for a kind with no reason to appear in a placement file (a mounting
+# hole, a test point), `exclude_from_pos_files` too.  Quoted directly from
+# KiCad 10's own shipped footprint library, not from memory:
+#
+#   MountingHole_2.2mm_M2.kicad_mod:  (attr exclude_from_pos_files exclude_from_bom)
+#   TestPoint_THTPad_D2.0mm...mod:    (attr exclude_from_pos_files exclude_from_bom)
+#   Fiducial_1mm_Mask2mm.kicad_mod:   (attr smd exclude_from_bom)
+#
+# Note a fiducial keeps `exclude_from_pos_files` OFF: its position is
+# exactly what the assembly line's optical alignment step needs from the
+# placement file. Contrast an ordinary sourced footprint, which carries only
+# its type token and nothing else, e.g. `(attr smd)` or `(attr through_hole)`.
+#
+# `scripts/kicad_bom.py audit --board BOARD.kicad_pcb` checks both halves
+# together and fails on either one missing.
+
+
+# =========================================================================
+# Part fields: what a buyer needs to source and assemble this design
+# =========================================================================
+# Every SOURCED part -- anything a buyer must order and an assembler must
+# place, which is everything NOT declared in BOARD_INHERENT above -- carries
+# a full field set here, keyed the same way PACKAGES is: by reference first,
+# falling back to value.
+#
+# This is a separate table from PACKAGES on purpose.  PACKAGES feeds
+# `kicad_fpcheck.py`'s pad-geometry check and keeps its existing key
+# convention untouched; PARTS feeds the bill of materials that leaves the
+# building.  For a sourced part the two should agree on package family, and
+# `scripts/kicad_bom.py audit` reports it as a note when they do not.
+#
+# Fill this as `resource-scout` resolves each part in phase 1, not as a
+# phase-5 afterthought.  A description written after the part has already
+# shipped is a description nobody could have bought from.
+# `scripts/kicad_bom.py audit SCHEMATIC.kicad_sch [--board ...] [--assembly
+# jlcpcb]` checks every sourced part's completeness before export, and
+# `scripts/kicad_fab.py`'s BOM step fails the same way on an empty required
+# cell.  See `commands/hw-bom.md` for the fill-in procedure and the
+# description standard, with worked examples of both.
+#
+# Required fields, and what makes each one acceptable:
+#
+#   description   a sentence a buyer can act on: function, key rating(s),
+#                 package.  Never just the value.  "100nF X7R ceramic
+#                 decoupling capacitor, 0603" is a description; "100n" is a
+#                 value repeated.  At least four words, and not the value
+#                 restated.
+#   manufacturer  the maker of the actual part, not the distributor.
+#   mpn           the manufacturer's own part number.
+#   package       a packages.json family id (see PACKAGES above).
+#   datasheet     a URL to the manufacturer's own datasheet, not a
+#                 distributor product page.
+#   lcsc          the LCSC part number (e.g. "C1525").  Required whenever
+#                 the assembly service is JLCPCB.  Property name "LCSC",
+#                 chosen to match what `scripts/kicad_fpcheck.py` already
+#                 reads and the first field name the locally installed
+#                 Fabrication Toolkit plugin resolves (`kb/fabs/jlcpcb.md`,
+#                 "Pre-upload checks"); a differently named field uploads a
+#                 BOM that looks complete and is silently unsourceable.
+#   distributors  optional dict of other distributor part numbers, keyed by
+#                 distributor name, e.g. {"digikey": "...", "mouser": "..."}.
+#
+# The schematic emitter writes every field present here into the schematic
+# symbol as a property of the same, capitalised name: Description,
+# Manufacturer, MPN, Package, Datasheet, LCSC.  Exactly the same mechanism
+# every other symbol property already uses (Reference, Value, Footprint),
+# quoted from a real project's placed symbol:
+#
+#   (property "Description" "100nF X7R ceramic capacitor, 0603"
+#       (at 444.5 368.3 0)
+#       (effects (font (size 1.27 1.27)) (hide yes)))
+#
+# A part with no entry here, or an entry missing a required field, is what
+# `kicad_bom.py audit` reports as a FAIL, one rule per missing or
+# insufficient field, naming the rule that fired.
+PARTS = {
+    # "<ref>": {                        # e.g. "C1"
+    #     "description": "<sentence: function, rating(s), package>",
+    #     "manufacturer": "<name>",
+    #     "mpn": "<manufacturer part number>",
+    #     "package": "<packages.json family id>",
+    #     "datasheet": "<manufacturer datasheet URL>",
+    #     "lcsc": "<LCSC part number>",
+    #     "distributors": {"digikey": "<part number>"},
+    # },
+}
+
+
+# =========================================================================
 # Pin-map table: the "one table, two emitters" doctrine
 # =========================================================================
 # The pattern that matters most in this file.

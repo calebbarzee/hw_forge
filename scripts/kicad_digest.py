@@ -61,7 +61,7 @@ comment or a footer:
 and put `--stamp` in `make check`.  The document then fails a check instead of
 misleading a human, and re-stamping it is the one-line act of saying "I have
 re-read this against the current board".  Any line matching
-`board-digest:\s*<hex>` is found, wherever it lives in the file.
+`board-digest:\\s*<hex>` is found, wherever it lives in the file.
 
     kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb          # verify
     kicad_digest.py --stamp ASSEMBLY.md board.kicad_pcb --write  # re-stamp

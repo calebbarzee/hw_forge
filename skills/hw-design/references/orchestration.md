@@ -52,6 +52,45 @@ and board B; the enclosure model while documentation is being written; research
 on two unrelated part families. Dispatch these in one message so they actually
 run concurrently.
 
+### Phase 1 fan-out: one Sonnet agent per part family
+
+Research is the clearest disjoint-subtree case, so make it the default shape
+rather than one `resource-scout` working the whole locked part list in
+sequence. Split the list by part family or subsystem, for example the RGB
+(red-green-blue) LED chain, the socketed display module, and the connector and
+power path, and dispatch one `resource-scout` per split. Give each one its own
+output file, `lib/research/<family-slug>.md`, in the same provenance-row
+format `agents/resource-scout.md` already specifies. That keeps the subtrees
+disjoint for the duration of the wave, satisfying the rule above, even though
+every fragment ends up folded into one `lib/PROVENANCE.md`.
+
+**You do the merge, not the agents.** After the wave's gate
+(`preflight.py --project`, every model link resolves), fold the fragments into
+`lib/PROVENANCE.md` yourself, or run one small sequential step to do it. That
+file is shared, and two agents writing it at once is exactly the clobbering
+case this section exists to prevent.
+
+**Verify the fan-out the way you verify any gate: read the artifacts, not the
+reports.** Spot-check at least one pin table per fragment against its cited
+sources yourself, the same discipline §4 asks for between waves generally. A
+research agent's claim that a part resolves is a claim, not evidence, same as
+a claim that a gate passed.
+
+### Implementation fan-out, generalized past phase 1
+
+The same rule applies wherever the subtrees are genuinely disjoint later in
+the pipeline: independent generator modules, independent `case_verify.py`
+check files, documentation for a board that is not being touched this wave.
+Fan out one Sonnet agent per disjoint piece whenever the work is bounded and
+carries its own machine-checkable gate. Keep the three design-critical roles,
+`schematic-engineer`, `pcb-engineer`, and `case-engineer`, on Opus by default
+regardless of how the rest of a wave fans out, because their mistakes are the
+kind a gate does not always catch (`SKILL.md`, "Model policy").
+
+Re-run the whole project's gate after the wave regardless of which piece
+changed, per §4. A shared file that two "disjoint" subtrees both import is the
+failure mode that does not announce itself until the gate runs.
+
 **Never parallel across a gate.** Phase N+1 does not start while phase N is
 un-re-verified, even if the files look disjoint. The pipeline's whole guarantee
 is that each phase is entered from a verified state.
@@ -60,8 +99,10 @@ A practical wave plan for a two-variant board, where `‖` marks agents running 
 parallel:
 
 ```
-wave 1   resource-scout                      (libraries, provenance manifests)
-  gate   every part resolves; you spot-check two pin tables yourself
+wave 1   resource-scout (LED chain) ‖ resource-scout (display) ‖
+         resource-scout (connectors)          (disjoint output files → parallel)
+  gate   every part resolves; you spot-check two pin tables yourself; you
+         merge the fragments into lib/PROVENANCE.md
 wave 2   schematic-engineer                  (design.py + schematic + power doc)
   gate   you run kicad_gate.py: ERC 0
 wave 3   pcb-engineer  — variant A           (shares gen_pcb.py → sequential)
@@ -91,7 +132,11 @@ Without this block the agent re-derives the repo and burns a third of its
 budget.
 
 **(b) Locked decisions, not to be relitigated.** Verbatim from the decisions
-document, never paraphrased, plus the barrier clause spelled out.
+document, never paraphrased, plus the barrier clause spelled out. Paste
+`SPEC.md`'s placement intent table and rules list alongside it, the same way:
+verbatim, not summarized. A prompt that says "the display goes on top" in its
+own words instead of quoting the placement row has already introduced one
+paraphrase the agent has no way to check against the source.
 
 Without this block agents substitute their own judgement on settled questions,
 and you find out from a physical part.
@@ -177,6 +222,14 @@ Two diagnostic patterns worth keeping:
 If a wave produced a regression, prefer re-dispatching with the regression as
 the stated diagnosis over fixing it yourself, because the agent has the context.
 But make the diagnosis yours, from the report you read.
+
+**Watch for tier-3 conditions while you read, not just gate failures.** An
+agent's UNRESOLVABLE part, a part or connector count that changed in a
+handoff, a cost figure that moved past the threshold in `SPEC.md` R9: these
+are tier-3 under `SKILL.md`'s escalation ladder, not something to note and
+move past. Collect what a wave surfaced and raise it as one batched DECISION
+REQUEST once the wave's gate is read, rather than deciding it yourself because
+the agent already moved on to its next task.
 
 ## 5. Cleanup: manifest, then execute
 
@@ -297,4 +350,5 @@ ROLE  case-engineer. Build the printed enclosure for the gated board.
 | Trusting a reported gate | You build phase N+1 on an unverified phase N. |
 | Parallel agents sharing a generator | Clobbering, plus each agent gating against a tree the other changed. |
 | Re-dispatching into a barrier | Turns burned against an unsatisfiable constraint. The tell is the violation count not moving. |
+| A tier-3 item decided silently | Silent deviation. The user finds out from a physical part instead of from a question. |
 | Cleanup without a manifest | Something load-bearing leaves, and you find out when the gate fails and cannot say what changed. |

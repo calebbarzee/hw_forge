@@ -46,6 +46,17 @@ A hand-placed part is lost on the next regeneration.
 Read `references/kicad-api.md` §4 before writing any `pcbnew` code. It carries
 the headless traps that each cost a session.
 
+**Autorouting is a spec-driven decision, not a blanket prohibition.** Check
+whether the intake or the locked decisions above name it. Absent a locked
+answer: a regular, repeated cell (a matrix, a chain, a connector row) is
+scripted, full stop. An irregular placement with many nets and no repeated
+cell to derive a lane order from is the hybrid flow, script the critical
+nets (power, differential pairs, the crystal, USB) and lock them, autoroute
+the rest, adopt the result back into the generator. Read
+`references/autorouting.md` before deciding either way, and the full rule set
+in `agents/pcb-engineer.md`'s Rules section. `scripts/kicad_route.py` is the
+DSN/SES bridge; `references/kicad-api.md` §10 has its traps.
+
 The five working rules, stated in full in the role definition:
 
 1. **Proto slice first.** Build a one-cell version of anything repeated, one
@@ -105,3 +116,8 @@ properly. At minimum it carries these four things.
   table of numbers to retype. The case engineer reads geometry with
   `kicad_geom.py`. Tell them which features matter, mounting holes, tall parts,
   connector overhangs, and let them read the coordinates themselves.
+- **The routing-file handoff, if any routing was autorouted**: the path to
+  the adopted routing module, the board digest it was adopted from, which
+  nets were scripted-and-locked versus autorouted, and the staleness rule
+  stated explicitly, any footprint move invalidates the whole file, not
+  just the routes near it (`references/autorouting.md` §2).

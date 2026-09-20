@@ -15,6 +15,33 @@ When a generic rule was learned from a specific incident, the reference states t
 and cites the incident in one line; the card holds the specifics. If you find yourself
 writing a generic rule in a card, promote it to the reference instead.
 
+## Where a fact lives: card, library, or table?
+
+A datasheet check or a physical measurement produces a fact. Where it goes depends on
+what kind of fact it is, not on where the check ran.
+
+| Fact learned from a datasheet or a physical check | Authoritative home |
+|---|---|
+| Pad or courtyard geometry that differs from a stock footprint | A project-local footprint in `kicad/lib/<project>.pretty/`, forked from the stock footprint with `scripts/kicad_fplib.py fork`. The change and its source go in the footprint's own `(descr ...)` and `(tags ...)` (`kicad_fplib.py annotate`) and in a `lib/PROVENANCE.md` row (`kicad_fplib.py provenance-row`). |
+| A 3D model | `kicad/lib/3dmodels/`, with its `(model ...)` line written into the footprint (`kicad_fplib.py set-model`), the same `${KIPRJMOD}`-anchored convention every footprint in the project already uses. |
+| A nominal package dimension generic to a package family (SOIC-8 wide's 7.5 mm body, SOD-123's 2.675 mm body) | `scripts/packages.json`, with a citation, so every project checking that family benefits, not only the one that found it. |
+| A part-specific fact with no generic home: a pin-order variant, a marking, a supplier substitution | A `kb/` card. |
+| Ordering and BOM (bill of materials) fields: manufacturer, part number, description, LCSC (LCSC Electronics, the parts distributor) number, package | `design.py`'s part table. The schematic emitter writes them into the symbol's own fields, so the BOM and the schematic cannot disagree. |
+
+**A card alone never closes a geometry finding.** A `kicad_fpcheck.py` FAIL, or a
+datasheet that disagrees with a stock footprint's pads, is closed by forking the
+footprint and recording why, in the library, not by writing the disagreement down.
+Where a card exists for the same part, it points at the library fork and the
+provenance row instead of repeating the numbers; the numbers live once, in the
+footprint and the table that checks it. This is the same discipline the 3D-model flow
+already established (a resolved model goes into `kicad/lib/3dmodels/` and a `(model
+...)` line, not only into a note that a model was found), stated once here so a
+geometry finding follows the same rule instead of stopping at a card.
+
+This is the split rule one level down. The split rule above says whether a fact is a
+card or a reference; this table says, for a geometry or 3D-model finding specifically,
+whether it is a card at all, or something a gate reads directly.
+
 ## Card format
 
 ```markdown

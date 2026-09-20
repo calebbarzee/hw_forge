@@ -232,6 +232,43 @@ def check_self(rep):
         rep.ok("hw_forge scripts", "%d script(s) compile" % len(scripts))
 
 
+def check_router(rep):
+    """Non-fatal: is a Specctra-speaking autorouter reachable.
+
+    Only the hybrid-routing flow (references/autorouting.md) needs this, and
+    only for boards that opt into it, so a missing router is a warning, not a
+    failure. Scripted routing is unaffected either way.
+
+    Discovery (`find_java` / `find_freerouting_jar`) lives in kicad_route.py
+    and is shared, not duplicated, here and in scripts/hw_install.py --check,
+    so all three tools agree on where the toolchain lives. `find_java`
+    itself now probes every candidate JRE's own version rather than trusting
+    a fixed path order: verified 2026-09-20, macOS's own /usr/bin/java
+    (OpenJDK 21) cannot run the pinned Freerouting v2.4.1 jar (needs Java
+    25), while /opt/homebrew/opt/openjdk/bin/java (Homebrew) does.
+    """
+    import kicad_route
+    java, java_how = kicad_route.find_java()
+    jar, jar_how = kicad_route.find_freerouting_jar()
+    router_fix = ("fix: python3 scripts/hw_install.py --router    "
+                 "(pinned version + checksum + smoke test)")
+    if java and jar:
+        rep.ok("autorouter", "freerouting jar via %s, java via %s"
+               % (jar_how, java_how))
+    elif java:
+        rep.warn("autorouter", "java ok (%s), no freerouting jar (%s)"
+                 % (java_how, jar_how),
+                 router_fix + "\n" + kicad_route.jar_install_hint())
+    elif jar:
+        rep.warn("autorouter", "freerouting jar found (%s), no java (%s)"
+                 % (jar_how, java_how), kicad_route.java_install_hint())
+    else:
+        rep.warn("autorouter", "no java and no freerouting jar; the hybrid "
+                 "autorouting flow is unavailable, scripted routing is "
+                 "unaffected",
+                 router_fix + "\n" + kicad_route.jar_install_hint())
+
+
 # --------------------------------------------------------------- project
 
 def check_project(rep, project_dir, cli):
@@ -663,6 +700,7 @@ def main():
     rep = Report()
     cli, kpy = check_toolchain(rep)
     check_self(rep)
+    check_router(rep)
 
     kicad_dirs = None
     if args.project:

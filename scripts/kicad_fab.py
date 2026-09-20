@@ -47,7 +47,8 @@ knowledge, not tool knowledge.
         "notes_by_value_footprint": {
           "100n|Capacitor_SMD:C_0603_1608Metric": "one per LED, at its VDD pad"
         },
-        "no_part_footprints": ["MountingHole:MountingHole_2.2mm_M2"]
+        "no_part_footprints": ["MountingHole:MountingHole_2.2mm_M2"],
+        "assembly": "jlcpcb"
       },
       "assert": {
         "npth_holes": {"2.2": 6, "3.988": 22},
@@ -57,6 +58,17 @@ knowledge, not tool knowledge.
         "min_file_sizes": {"-F_Cu.gbr": 20000}
       }
     }
+
+`bom.assembly` (optional, default none) turns on the same rule
+`scripts/kicad_bom.py audit --assembly jlcpcb` applies: every populated,
+non-DNP, non-`no_part_footprints` row must carry a non-empty LCSC part
+number, on top of the Description/Manufacturer/MPN/Package/Datasheet check
+that runs for every populated, non-DNP, non-`no_part_footprints` row
+regardless of `bom.assembly`. A DNP row and a `no_part_footprints` entry (a
+mounting hole declared this way rather than through `design.py`'s
+`BOARD_INHERENT`, for a project whose schematic predates this doctrine) are
+both exempted from every sourcing-field check, the same as `populate`
+already marks them as never sourced.
 
 `npth_holes` / `pth_holes` are {diameter_mm: expected_count}, matched with a
 tolerance because excellon rounds.  Slots are counted by their minor axis,
@@ -130,6 +142,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kicad_geom
 import report as report_mod
 from _kicad_env import cli_version, find_cli, run
+from kicad_bom import sourced_field_problems
 
 # Non-copper layers every fab package needs, in plot order.
 TECH_LAYERS = ["F.Mask", "B.Mask", "F.Silkscreen", "B.Silkscreen",
@@ -145,8 +158,16 @@ REQUIRED_SUFFIXES = ["-job.gbrjob", "-PTH.drl", "-NPTH.drl",
 # assertions compare within a tolerance rather than exactly.
 DIA_TOL = 0.002
 
-BOM_FIELDS = "Reference,Value,Footprint,DNP"
-BOM_LABELS = "Refs,Value,Footprint,DNP"
+BOM_FIELDS = ("Reference,Value,Footprint,DNP,Description,Manufacturer,MPN,"
+              "LCSC,Package,Datasheet")
+BOM_LABELS = ("Refs,Value,Footprint,DNP,Description,Manufacturer,MPN,LCSC,"
+              "Package,Datasheet")
+
+# The sourcing columns carried through from the flat per-symbol export into
+# the regrouped BOM, by their BOM_LABELS name. See templates/design.py's
+# "Part fields" section for what each one means and who writes it.
+BOM_EXTRA_FIELDS = ("Description", "Manufacturer", "MPN", "LCSC", "Package",
+                    "Datasheet")
 
 
 # ------------------------------------------------------------------ discovery
@@ -333,6 +354,18 @@ def make_bom(flat_csv, out_csv, bom_profile, sides=None):
     Grouped by (footprint, value, DNP), where DNP is the do-not-populate flag:
     a footprint alone merges parts that differ electrically, and a value alone
     merges a 0603 with an 0805.
+
+    Also carries the sourcing columns (Description, Manufacturer, MPN, LCSC,
+    Package, Datasheet -- BOM_EXTRA_FIELDS) through from the flat export, and
+    checks every populated, non-DNP, non-board-feature group against
+    `kicad_bom.sourced_field_problems`, the same rule
+    `scripts/kicad_bom.py audit` applies to the schematic before this ever
+    runs. A DNP group (`populate` == "no (DNP)") is exempt from that check
+    the same way a `no_part_footprints` group is: it will never be
+    populated, so it needs no sourcing fields. Returns (row_count,
+    placement_count, bom_fails); a non-empty `bom_fails` is a hard failure
+    the same as any other fab assertion, folded into `check()`'s failure
+    list by the caller.
     """
     profile = bom_profile or {}
     sides = sides or {}
@@ -341,8 +374,9 @@ def make_bom(flat_csv, out_csv, bom_profile, sides=None):
     notes_fp = profile.get("notes_by_footprint", {})
     notes_vf = profile.get("notes_by_value_footprint", {})
     no_part = set(profile.get("no_part_footprints", []))
+    assembly = profile.get("assembly")
 
-    groups = {}
+    groups, extras = {}, {}
     with open(flat_csv, newline="") as fh:
         for row in csv.DictReader(fh):
             ref = (row.get("Refs") or row.get("Reference") or "").strip()
@@ -361,15 +395,34 @@ def make_bom(flat_csv, out_csv, bom_profile, sides=None):
                 if pattern.match(value):
                     value = repl
                     break
-            groups.setdefault((footprint, value, dnp), []).append(ref)
+            key = (footprint, value, dnp)
+            groups.setdefault(key, []).append(ref)
+            # First row seen for a group sets its sourcing fields. Parts that
+            # share a footprint, value and DNP state are meant to be the same
+            # physical part, so their descriptive fields should already agree;
+            # this does not re-verify that, it just avoids overwriting with a
+            # later row's (identical, in the normal case) values.
+            extras.setdefault(key, {f: (row.get(f) or "").strip()
+                                    for f in BOM_EXTRA_FIELDS})
 
-    rows = []
-    for (footprint, value, dnp), refs in groups.items():
+    rows, bom_fails = [], []
+    for key, refs in groups.items():
+        footprint, value, dnp = key
         note = notes_vf.get("%s|%s" % (value, footprint)) or \
             notes_fp.get(footprint, "")
         populate = ("n/a (board feature)" if footprint in no_part
                     else ("no (DNP)" if dnp else "yes"))
-        rows.append([collapse(refs), value, footprint, len(refs),
+        fields = extras.get(key, {})
+        if populate not in ("n/a (board feature)", "no (DNP)"):
+            for rule, detail in sourced_field_problems(fields, value,
+                                                        assembly):
+                bom_fails.append("%s (%s): %s [%s]"
+                                 % (collapse(refs), value, detail, rule))
+        rows.append([collapse(refs), value, footprint,
+                     fields.get("Description", ""),
+                     fields.get("Manufacturer", ""), fields.get("MPN", ""),
+                     fields.get("LCSC", ""), fields.get("Package", ""),
+                     fields.get("Datasheet", ""), len(refs),
                      side_column(refs, sides), populate, note])
     rows.sort(key=lambda r: natkey(r[0].split(",")[0].split("-")[0]))
 
@@ -382,14 +435,15 @@ def make_bom(flat_csv, out_csv, bom_profile, sides=None):
         for line in profile.get("header", []):
             fh.write(line + "\n")
         writer = csv.writer(fh)
-        writer.writerow(["Item", "Refs", "Value", "Footprint", "Qty", "Side",
-                         "Populate", "Notes"])
+        writer.writerow(["Item", "Refs", "Value", "Footprint", "Description",
+                         "Manufacturer", "MPN", "LCSC", "Package",
+                         "Datasheet", "Qty", "Side", "Populate", "Notes"])
         for i, row in enumerate(rows, 1):
             writer.writerow([i] + row)
         writer.writerow([])
-        writer.writerow(["", "TOTAL placements", "", "",
-                         sum(r[3] for r in rows), "", "", ""])
-    return len(rows), sum(r[3] for r in rows)
+        writer.writerow(["", "TOTAL placements", "", "", "", "", "", "", "",
+                         "", sum(r[9] for r in rows), "", "", ""])
+    return len(rows), sum(r[9] for r in rows), bom_fails
 
 
 # ----------------------------------------------------------------- assertions
@@ -764,8 +818,9 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
         if fp.get("pad_side") not in (None, "both", fp.get("side")):
             flipped.append((ref, fp["side"], fp["pad_side"], fp.get("lib")))
 
-    lines, placements = make_bom(flat, os.path.join(outdir, name + "-bom.csv"),
-                                 profile.get("bom"), sides)
+    lines, placements, bom_fails = make_bom(
+        flat, os.path.join(outdir, name + "-bom.csv"), profile.get("bom"),
+        sides)
     os.remove(flat)
     print("  bom     %d lines, %d placements" % (lines, placements))
     top = placement_rows(os.path.join(outdir, name + "-pos-top.csv"))
@@ -780,6 +835,10 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
 
     assertions = profile.get("assert") or {}
     fails, notes, changes = check(outdir, name, layers, assertions)
+    # BOM completeness first: a missing Description or LCSC number is the
+    # thing a human is most likely to only discover at order time, and it is
+    # cheap to fix right here, before the placement/hole assertions below.
+    fails = bom_fails + fails
 
     # Reported, never failed: a footprint on one face with all its copper on
     # the other is correct and standard (a hotswap socket takes its switch in

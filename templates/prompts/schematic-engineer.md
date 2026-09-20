@@ -53,6 +53,19 @@ The four working rules, stated in full in the role definition:
 3. **Verify every pinout against two independent sources**, and record both.
 4. **Power design is part of this phase**, not a later review, because it
    changes the netlist.
+5. **Every part gets a full field set, or an explicit board-inherent kind.**
+   `design.py`'s `PARTS` table carries description, manufacturer, MPN,
+   package, datasheet, and LCSC part number for every part a buyer sources;
+   `BOARD_INHERENT` names the kind (mounting hole, fiducial, test point,
+   logo, net tie, edge connector) for everything that is a property of the
+   board instead. Your emitter writes `PARTS` fields into the schematic as
+   same-named symbol properties and sets `in_bom no` on every
+   `BOARD_INHERENT` symbol's placement, so the exported bill of materials
+   lists what someone has to buy and solder, not the board's own holes. Run
+   `python3 scripts/kicad_bom.py audit PROJECT.kicad_sch --design design.py`
+   before reporting; it is part of your gate alongside ERC 0. See
+   `templates/design.py`'s "Board-inherent kinds" and "Part fields" sections
+   for the field contract and the exact s-expressions KiCad 10 uses.
 
 ## Your gate
 
@@ -63,6 +76,8 @@ Baseline, unless overridden above:
 ```
 python3 scripts/kicad_gate.py <project_dir>      # ERC must be clean, exit 0
 python3 design.py                               # imports clean, invariants hold
+python3 scripts/kicad_bom.py audit <project_dir>/<name>.kicad_sch \
+    --design <project_dir>/design.py             # BOM fields, exit 0
 ```
 
 Re-run the gate yourself before reporting. Do not report a gate you have not

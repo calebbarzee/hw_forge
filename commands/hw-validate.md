@@ -104,6 +104,7 @@ power delivery, chain order), run this second pass.
    | Matrix | the expected key→row/col table, regenerated from the design file, against the netlist | no differences |
    | Polarity | diode/cap pin-1-vs-pin-2 across all instances | the same convention on every instance |
    | No-connects | spare pins and named nets | spares explicitly NC'd, and no single-node named nets |
+   | Package | every footprint's pad geometry against its declared package (`kicad_fpcheck.py BOARD --design design.py`) | PASS, or an explained WARN or FAIL naming the rule that fired; footprints checked only against their own name are named as such |
 
 4. **Symbol pin semantics vs footprint pad numbering**, for every non-stock
    part. It is the one error class that passes ERC, DRC, *and* parity while

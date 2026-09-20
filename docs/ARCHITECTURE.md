@@ -53,8 +53,11 @@ hw_forge/
 ├── skills/hw-design/
 │   ├── SKILL.md                    # the orchestrator: phases, gates, protocols
 │   └── references/
+│       ├── intake.md               # phase-0 question bank, defaults, the worked case
 │       ├── orchestration.md        # wave playbook + agent prompt templates
 │       ├── kicad-api.md            # kicad-cli + headless pcbnew, every known trap
+│       ├── autorouting.md          # scripted vs autorouted copper, the hybrid flow
+│       ├── kicad-ecosystem.md      # plugins, MCP servers, tools: adopt/evaluate/skip
 │       ├── electronics.md          # power topology, matrix routing, mirroring traps
 │       ├── mechanical.md           # inserts, screws, stack-ups, printability
 │       └── batteries.md            # cell tables, connectors, swell allowances
@@ -66,17 +69,25 @@ hw_forge/
 │   ├── kicad_geom.py               # s-expr parser: outline, holes, footprint positions
 │   ├── kicad_scaffold.py           # project + lib-tables + .kicad_pro severity patching
 │   ├── kicad_digest.py             # canonical KIID-free digest: the determinism check
+│   ├── kicad_3d.py                 # STEP assembly export, verify, render
+│   ├── kicad_fpcheck.py            # pad geometry vs the declared package
+│   ├── packages.json               # nominal package dimensions, every number cited
+│   ├── kicad_fplib.py              # fork and edit a project-local footprint: the fpcheck fix
+│   ├── kicad_bom.py                # BOM field audit + export; board-inherent items excluded
+│   ├── kicad_route.py              # autorouter bridge (Freerouting DSN/SES, KiCadRoutingTools) + adopt
+│   ├── hw_install.py               # one-command install of the optional tools, pinned and checksummed
 │   ├── case_verify.py              # numeric interference-check runner
 │   ├── gerber_diff.py              # are two exports geometrically identical?
 │   └── report.py                   # one-line summary of any kicad-cli JSON report
 ├── templates/
-│   ├── design.py                   # logical-design skeleton
+│   ├── design.py                   # logical-design skeleton, with the PACKAGES table
+│   ├── SPEC.md                     # decisions-doc skeleton: Locked, Delegated, Design intent
 │   ├── Makefile                    # the gate-loop contract
 │   ├── .gitignore                  # what a generated hardware repo keeps
 │   └── prompts/                    # role prompts with locked-decision slots
 ├── commands/                       # single-phase slash entry points
 │   ├── hw-preflight.md  hw-validate.md  hw-research.md
-│   └── hw-export.md     hw-kb.md
+│   └── hw-export.md     hw-bom.md        hw-kb.md
 ├── agents/                         # role definitions, model policy encoded
 │   ├── schematic-engineer.md  pcb-engineer.md  case-engineer.md
 │   └── fab-docs-engineer.md   resource-scout.md
@@ -98,12 +109,12 @@ reported.
 
 | # | Phase | Entry contract | Owner | Exit gate |
 |---|---|---|---|---|
-| 0 | **Spec lock** | a device idea | orchestrator + user | A decisions doc: locked choices verbatim, plus numbered open questions each carrying a recommendation. The user answers or explicitly delegates every one. |
-| 1 | **Libraries + research** | locked spec | `resource-scout` | Every part resolves. A provenance manifest exists for each vendored asset. Pin tables are verified against two independent sources. Zero hand-authored geometry. |
+| 0 | **Spec lock** | a device idea | orchestrator + user | `SPEC.md` from the intake question bank (`references/intake.md`), asked in one batch: locked choices verbatim, delegated defaults recorded, a placement-intent table and a rules list that every agent prompt carries. Every question with no safe default is answered or explicitly delegated. |
+| 1 | **Libraries + research** | locked spec | `resource-scout` | Every part resolves. A provenance manifest exists for each vendored asset. Pin tables are verified against two independent sources. Zero hand-authored geometry, 3D models included. Every resolved footprint is checked against the part's declared package with `kicad_fpcheck.py`. |
 | 2 | **Logical design** | resolved part list | agent | `design.py` imports clean under both the system Python and the CAD Python. Nets, pin maps, and topology all derive from it. |
-| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py --sch-only`, exit 0; a board-less project reports DRC as SKIPPED). A power-design decision record is written, meaning a decision document rather than a citation list. |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity with schematic parity enforced, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical digest. |
-| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | Export assertions pass: every artifact non-empty, hole counts, the per-side placement split, declared-empty layers. A manifest stamps the export's provenance. Renders are inspected. |
+| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py --sch-only`, exit 0; a board-less project reports DRC as SKIPPED). A power-design decision record is written, meaning a decision document rather than a citation list. `kicad_bom.py audit` exits 0: every sourced part carries its sourcing fields and every board-inherent symbol is excluded from the BOM. |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity with schematic parity enforced, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical digest. Autorouted copper, where the spec permits it, is adopted back into the generator as a committed routing file (`kicad_route.py adopt`). |
+| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | Export assertions pass: every artifact non-empty, hole counts, the per-side placement split, declared-empty layers. A manifest stamps the export's provenance. Renders are inspected. `kicad_fpcheck.py` runs clean before any export. `kicad_bom.py audit` re-runs clean, and the BOM step fails on any empty required cell. |
 | 6 | **Enclosure** | gated board files | `case-engineer` | All numeric `verify()` checks pass. Shells are valid single solids. Printability rules hold. |
 | 7 | **Docs + hygiene + harvest** | everything above green | agent + orchestrator | Docs describe the as-built state. Gates still pass after cleanup. New lessons are written into knowledge-base cards. |
 
@@ -157,8 +168,18 @@ diagnosis, the named constants worth touching, and budget advice. A mirrored
 variant landing clean on first regeneration comes directly out of its sibling's
 handoff.
 
-**Locked decisions, with a barrier clause.** Every agent prompt carries the same
-verbatim list of user-locked choices, marked as not open for relitigation.
+**Locked decisions, with an escalation ladder.** Every agent prompt carries the
+same verbatim list of user-locked choices, marked as not open for relitigation,
+plus the placement-intent and rules blocks from `SPEC.md`.
+
+Mid-run choices the spec did not name sit on a three-tier ladder
+(`SKILL.md`, "Locked decisions and the escalation ladder"). Tier 1 is decided
+and logged. Tier 2 is decided, then flagged for review at the next phase
+boundary. Tier 3 stops and asks: anything that changes a locked decision, adds
+or removes a part, interface, or board, moves the outline, layer count, or unit
+cost past the threshold in `SPEC.md` (20% by default), blocks fab or assembly,
+or touches safety. Tier 3 questions are batched into one DECISION REQUEST per
+wave unless one blocks all further work.
 
 When one of them makes a gate impossible or forces a materially worse design,
 the agent stops and returns a structured barrier report stating what is blocked,
@@ -172,9 +193,13 @@ without it every westbound chain link crosses its own cell, giving 58
 `shorting_items` on the first attempt. That rejection is legitimate only because
 it was reported and recorded rather than quietly enacted.
 
-**Model policy.** Opus for the design-critical roles, meaning schematic, PCB,
-and case, encoded in the agent definitions themselves. Cheaper models are
-adequate for resource scouting, fab exports, and documentation work.
+**Model policy.** A dial. Sonnet for research, vendoring, exports,
+documentation, and bounded implementation with a machine-checkable gate; these
+fan out in parallel, one agent per disjoint subtree, and the orchestrator
+re-runs every gate itself (`references/orchestration.md` §2). Opus, by default,
+for the design-critical roles, meaning schematic, PCB, and case, encoded in the
+agent definitions themselves. Lowering the design roles is the user's explicit
+call, never a cost optimisation the orchestrator makes on its own.
 
 ## 5. Component inventory
 
@@ -196,7 +221,15 @@ What each piece of hw_forge is, and its state.
 | `references/electronics.md` | Power topology, routing, and mirroring, written as rules and decision trees | done |
 | `references/mechanical.md`, `references/batteries.md` | Fastening and printability, and cell tables, written as formulas and tables | done |
 | `kb/` cards | One card per domain-specific fact, tagged by domain | done |
-| `scripts/preflight.py` | The smoke-test rule made executable | done |
+| `scripts/preflight.py` | The smoke-test rule made executable; reports whether an autorouter is reachable, non-fatally | done |
+| `scripts/kicad_fpcheck.py`, `scripts/packages.json` | Pad geometry against the declared package, with a cited nominal-dimension table | done |
+| `scripts/kicad_bom.py` | BOM field completeness audit and export, with the board-inherent exclusion rule | done |
+| `scripts/kicad_fplib.py` | Fork a stock footprint into the project library and edit pads, model link, and provenance fields; the path from a finding to a fabbed change | done |
+| `scripts/hw_install.py` | Pinned, checksummed install of Freerouting, the Fabrication Toolkit, and KiCadRoutingTools; `--check` reports without downloading | done |
+| `scripts/kicad_route.py` | The Specctra DSN/SES bridge to an external autorouter, and the adopt step that freezes routes into `kicad/routing.py` | done; both backends (Freerouting, KiCadRoutingTools) run end to end on a test board, see `kb/runs/hexpad-autoroute-2026-09-20.md` |
+| `references/intake.md`, `templates/SPEC.md` | The phase-0 question bank and the decisions-doc skeleton | done |
+| `references/autorouting.md` | Scripted against autorouted copper: the decision rule, hybrid flow, and tool comparison | done |
+| `references/kicad-ecosystem.md` | Plugins, MCP servers, and tools for headless KiCad, with adopt, evaluate, or skip verdicts | done |
 
 `design.py` and `gen_pcb.py` themselves stay **project code**. hw_forge ships
 the skeleton and the tools, not a universal generator. Board topologies differ

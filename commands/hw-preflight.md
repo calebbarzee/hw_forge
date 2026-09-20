@@ -69,3 +69,15 @@ the gates ran. Reporting a blocked environment is the correct outcome.
   problem in the project's Makefile, not a missing package.
 - **Missing CAD packages.** Enclosure work needs build123d. Report the exact
   install line preflight prints.
+- **Missing autorouter (`autorouter` warning, not a failure).** The hybrid
+  routing flow (`references/autorouting.md`) needs a Freerouting jar and a
+  Java runtime; scripted routing is unaffected either way. The fix is
+  `python3 scripts/hw_install.py --router`, which downloads the pinned jar
+  version, verifies its checksum, and runs a headless smoke test; pass that
+  command through verbatim rather than a raw `curl`. `python3
+  scripts/hw_install.py --check` reports what is present, at what version,
+  and whether it runs, without downloading anything, and is a fast next step
+  when preflight reports the autorouter as unclear rather than simply
+  absent. `--routing-tools` installs the second autorouting backend
+  (KiCadRoutingTools) the same way, and `--all` installs every optional
+  toolchain component in one command.

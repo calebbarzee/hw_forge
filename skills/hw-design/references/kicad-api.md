@@ -127,10 +127,16 @@ kicad-cli pcb export drill -o fab/ --format excellon --drill-origin absolute \
 kicad-cli pcb export pos -o fab/pos-all.csv --side both   --format csv --units mm board.kicad_pcb
 kicad-cli pcb export pos -o fab/pos-top.csv --side front  --format csv --units mm board.kicad_pcb
 
-# BOM: export flat, then group in your own script (see below).
-kicad-cli sch export bom -o .bom-flat.csv --fields "Reference,Value,Footprint,DNP" \
-  --labels "Refs,Value,Footprint,DNP" --group-by "" --sort-field Reference \
-  --ref-range-delimiter "" board.kicad_sch
+# BOM: export flat with the full sourcing field list, then group in your own
+# script (see below), or use scripts/kicad_bom.py, which audits completeness
+# and the board-inherent exclusion rule before it exports.
+kicad-cli sch export bom -o .bom-flat.csv \
+  --fields "Reference,Value,Footprint,DNP,Description,Manufacturer,MPN,LCSC,Package,Datasheet" \
+  --labels "Refs,Value,Footprint,DNP,Description,Manufacturer,MPN,LCSC,Package,Datasheet" \
+  --group-by "" --sort-field Reference --ref-range-delimiter "" board.kicad_sch
+# A symbol placed with (in_bom no) is dropped by this export, and the flag
+# --include-excluded-from-bom is deprecated and has no effect on 10.0.5. That
+# is the intended path for mounting holes, fiducials, test points, and logos.
 
 kicad-cli pcb render -o top.png --side top -w 2000 --height 1450 --zoom 1.35 \
   --background opaque --quality high board.kicad_pcb
@@ -627,3 +633,271 @@ project that count was identical before and after: combo 1503 primitives, left
 separate "model lines added" from "geometry changed", or state the fingerprint
 method by hand. Describe the principle here; do not invent a comparison flag for
 a script you have not read.
+
+## 10. Specctra DSN export and SES import: the autorouter bridge
+
+`scripts/kicad_route.py` uses this for the autorouting flow decided in
+`references/autorouting.md`. This section is the API-level detail: what
+interface does it, and every trap found while exercising it. Verified against
+KiCad 10.0.5 unless stated otherwise; every check below was run against a copy
+of a real board, never a toy file.
+
+### There is no `kicad-cli` path
+
+Checked directly: `kicad-cli pcb export --help` lists 3dpdf, brep, drill, dxf,
+gencad, gerbers, glb, hpgl, ipc2581, ipcd356, odb, pdf, ply, pos, ps, stats,
+step, stl, stpz, svg, u3d, vrml, xao. No `dsn`. `kicad-cli pcb import --help`
+imports a *different* CAD tool's PCB file into KiCad format (pads, altium,
+eagle, cadstar, fabmaster, pcad, solidworks), it does not read a Specctra
+session, and nothing in `kicad-cli` writes one either.
+
+The KiCad 10 IPC API (`kicad-python` / `kipy`) does not fill this gap. Its
+published documentation (docs.kicad.org/kicad-python-main) shows `Board`
+exposing `get_footprints/tracks/vias/pads/nets/zones`, headless document
+open/create, and generic graphic shapes, no DSN/SES import or export, and no
+documented track/via creation call as of this writing. So a scripted router
+integration in KiCad 10 has exactly one path: the same SWIG `pcbnew` module
+`kicad_zonefill.py` already depends on.
+
+```python
+pcbnew.ExportSpecctraDSN(board, "board.dsn")   # -> bool
+pcbnew.ImportSpecctraSES(board, "board.ses")   # -> bool
+```
+
+Both confirmed present by introspecting the bundled interpreter
+(`hasattr(pcbnew, "ExportSpecctraDSN")` / `"ImportSpecctraSES"`), both
+free functions (not `BOARD` methods) taking the board and a filename. Both run
+under KiCad's bundled interpreter only, like every other `pcbnew` call in this
+file, run either under the system python and you get an ImportError, not a
+routing result.
+
+### Trap: locking is the whole protection mechanism, and export is silent about it
+
+`ExportSpecctraDSN` writes a wire's Specctra `type` field from the track's own
+`Locked` state and nothing else. Measured: exporting a board with five tracks
+marked `SetLocked(True)` and 190 left alone produced a DSN with exactly five
+`(type fix)` wires; every unlocked wire carries no `(type ...)` field at all
+(that omission is the Specctra "normal", meaning free to reroute).
+
+So the entire hybrid-routing contract in `references/autorouting.md`, the
+generator routes power, differential pairs, the crystal, USB by script, and
+those runs are supposed to survive the autorouter, depends on one line the
+generator must not forget: `track.SetLocked(True)` / `via.SetLocked(True)`
+before `SaveBoard()`, for every item on a net the generator routed itself.
+Nothing at export time enforces this; a generator that forgets it produces a
+perfectly valid DSN, and the autorouter will happily reroute a "protected"
+net with no error from any tool in the chain. `kicad_route.py export-dsn`
+reports the locked-track count from the board against the fixed-wire count in
+the DSN and warns on a mismatch, but that is a smoke check, not a substitute
+for locking in the first place.
+
+### Trap: an external router may rewrite the project's DRC floors
+
+KiCadRoutingTools' `route.py` lowers the output `.kicad_pro` Board Setup
+constraints to whatever it routed unless `--no-fix-drc-settings` is passed
+(measured: `min_hole_clearance` 0.25 mm to 0.20 mm). A gate run beside that
+file passes copper the project's own rules reject. Any wrapper around an
+external tool copies the project's own `.kicad_pro` beside the output before
+the refill and the gate; `kicad_route.py route-krt` does. The general form of
+the rule: a tool's "DRC clean" is a claim about the rules it wrote, and the
+gate measures against the rules the project wrote.
+
+### Trap: `ImportSpecctraSES` replaces the routing, it does not patch it
+
+Measured on a copy of a fully-routed 150-track / 45-via test board: importing
+a hand-built session that named a single wire on a single net left the board
+with **one track and zero vias**. Every other net's copper was gone, not
+flagged as unrouted, just absent, because a session file is read as the
+board's entire routing solution, not a diff against what was already there.
+The two copper pours were untouched, because Specctra has no zone concept at
+all; only tracks and vias are subject to replacement.
+
+This is safe exactly once: when you import a real router's own output session
+against the same DSN it just routed, because that router's session enumerates
+every net it read, including the ones it left untouched because they were
+locked. It is never safe to import a partial, hand-edited, or stale session
+against a board whose nets have since changed. `kicad_route.py import-ses`
+diffs per-net track/via counts before and after and warns on any net that had
+copper and now has none, which is this trap made visible instead of silent.
+
+### Trap: the session's `(resolution um N)` scales every coordinate on import
+
+KiCad's DSN export declares `(resolution um 10)` and `(unit um)` in its header
+and then writes coordinates in plain micrometres: on the test board, a switch
+placed at the 19.05 mm key pitch appears as `(place SW2 19050 -31999.999
+front)`, and a 0.25 mm track at x 7.0 mm as `(wire (path F.Cu 250 7000
+-35000 7000 -38800))`. `ImportSpecctraSES`, however, divides every coordinate
+and width in the session by the resolution the session's own `(routes
+(resolution um N))` block declares.
+
+Measured: a hand-built session that copied the DSN's numbers verbatim under a
+`(resolution um 10)` header came back at 0.7, -3.5 to 0.7, -3.88 mm and
+0.025 mm wide, every number exactly 10 times too small. The factor is the
+declared resolution, not a rounding artefact.
+
+A real router writes its session in resolution units (a 7.0 mm coordinate
+under resolution 10 is written 70000), which is why the production
+`ExportSpecctraDSN` to Freerouting to `ImportSpecctraSES` round trip does not
+hit this (a third-party project using that exact pipeline,
+github.com/bluzername/specs-to-pcb, applies no scaling correction anywhere).
+
+**Verified locally, 2026-09-20**, against a real Freerouting v2.4.1 session
+(`kb/runs/hexpad-autoroute-2026-09-20.md`): importing its output SES into the
+same board it routed and reading tracks back with `kicad_geom.py`, 107 of 534
+track endpoints land exactly (0.0000 mm) on a pad centre. The 10× scaling
+trap does not reproduce against a real router's own session; it remains real
+only for a hand-built or replayed one.
+
+Two rules follow. A hand-built session is good only for proving the API call
+is reachable and does not corrupt the board file; it is not evidence of
+coordinate fidelity. And `kicad_route.py adopt` should only ever run against a
+board produced by importing a real router's session, never a hand-built one.
+
+### The generator/router boundary, and why `adopt` exists
+
+An autorouter is not a pure function of `design.py`: run it twice and there is
+no guarantee of the same tracks, or even the same topology. `gen_pcb.py`
+calling into a router directly would break the determinism contract
+`kicad_digest.py` exists to check, a wipe-and-rebuild is supposed to
+reproduce the same canonical digest, and nothing about that claim survives an
+autorouter in the hot path.
+
+`kicad_route.py adopt` is the seam: it runs once, outside `gen_pcb.py`,
+against a board whose routing has already been reviewed and gated by hand,
+and freezes every track and via into a plain python data module, the same
+kind of named-constant table `design.py` already carries for everything else.
+`gen_pcb.py` imports that module and replays it; the router itself is never
+called again during a normal build. A wipe-and-rebuild after adoption is
+deterministic for the ordinary reason any constant-driven geometry is:
+nothing nondeterministic runs during generation.
+
+The corollary is the staleness rule: adopted copper is positioned against the
+pad locations the board had when it was adopted, and a track endpoint carries
+no memory of which pad it used to touch. Any placement change to any
+footprint makes the whole adopted routing file suspect, because there is no
+cheap way to prove which routes were unaffected short of cross-referencing
+every moved footprint's pads against every route endpoint by hand, exactly
+the kind of proof-instead-of-nudge this document's "nudge, do not prove" rule
+elsewhere exists to avoid. Re-route in full on any placement change; do not
+try to salvage part of an adopted file.
+
+### Measured, 2026-09-20: the full round trip against a real Freerouting run
+
+Everything above this point in §10 was verified against the DSN/SES
+interfaces individually, or from Freerouting's own documentation. A complete
+export-dsn / route / import-ses / gate / adopt round trip, against a real
+Freerouting v2.4.1 process, on a copy of the hexpad board (see
+`kb/runs/hexpad-autoroute-2026-09-20.md` for every command and number),
+closes that gap. Two traps found doing it, neither previously documented:
+
+**Two independent macOS JREs are not interchangeable for this jar, and the
+wrong one fails silently rather than loudly.** `/usr/bin/java` (OpenJDK
+21.0.2) loads freerouting-2.4.1.jar far enough to print `Error:
+LinkageError... UnsupportedClassVersionError: ... has been compiled by a
+more recent version of the Java Runtime (class file version 69.0), this
+version of the Java Runtime only recognizes class file versions up to 65.0`
+and then **exits 0**, with no `.ses` written. A caller checking only the
+return code sees success. `/opt/homebrew/opt/openjdk/bin/java` (OpenJDK
+25.0.2, Homebrew) runs the same jar cleanly. `kicad_route.py`'s `find_java`
+now probes every candidate's own `java -version` and picks the highest major
+version rather than a fixed path order, because which JRE is "correct" is a
+property of the jar's own minimum, which climbs between Freerouting
+releases, not of the machine.
+
+**A router that completes 100% of what it can see is not the same as a
+board `kicad_gate.py` will pass.** Freerouting's own log reported 0 unrouted
+and 0 violations, final score 999.99/1000, for a run that `kicad_gate.py`
+(after the mandatory post-import zone refill) failed on three grounds: 20
+track segments delivered below the project's 0.2 mm floor on six specific
+nets despite a 0.25 mm declared DSN class width, 11 `copper_edge_clearance`
+violations from routing through four LED footprints' own interior
+`Edge.Cuts` cutouts, and 3 `unconnected_items` from a single pinched GND
+zone corner, the `SetMinThickness` trap in §4 above, reproduced by an
+autorouter's copper instead of a scripted one. Freerouting has no notion of
+either a footprint-owned board cutout or a zone's fill polygon, so none of
+these three classes could have appeared in its own log. `references/
+autorouting.md` §6a has the full comparison against KiCadRoutingTools, which
+passed the same gate outright on the same board (after the zone refill its
+own output also needs, a distinct, separately-measured instance of the same
+stale-`filled_polygon` trap).
+
+## 11. Footprint forking: the `(descr)`, `(tags)`, `(model)` fields, and why the copy lives in the project library
+
+`scripts/kicad_fplib.py` is the write path for a footprint finding: fork a
+stock footprint into the project library, edit the fork, record why. See
+`kb/README.md`'s "where a fact lives" table for the doctrine this
+mechanises, and `agents/resource-scout.md` gate 7 for where the finding that
+triggers a fork comes from (`kicad_fpcheck.py`).
+
+### Why the fork lives in `kicad/lib/`, not in KiCad's install directory
+
+KiCad's own install (`/Applications/KiCad/KiCad.app/Contents/SharedSupport/
+footprints/` on macOS; see `preflight.py`'s `model_roots()` for the
+per-platform discovery this mirrors) is shared across every project on the
+machine and is not this repository's to version. Editing a footprint there
+changes it for every other project too, silently, and the edit disappears on
+the next KiCad upgrade.
+
+A project-local library under `kicad/lib/<project>.pretty/` is neither: it is
+committed with the project, versioned with the project's own history, and
+touches nothing outside it. This is the same reasoning `kb/keyboards/
+local-libraries.md`'s "vendor into the project library, then upgrade"
+doctrine already states for a whole library; a forked single footprint is the
+same move at the grain of one part.
+
+### `fp-lib-table` already resolves the fork, via `kicad_scaffold.py`
+
+A project's `fp-lib-table` does not need to be told about a forked
+footprint individually. `kicad_scaffold.py`'s `discover_libs()` globs every
+`*.pretty` directory under the project's own `lib/` (or its parent's `lib/`,
+the usual layout, one shared library serving several board variants) and
+writes one `(lib ...)` row per directory, URI-anchored on `${KIPRJMOD}`:
+
+```
+(lib (name "myproj")(type "KiCad")(uri "${KIPRJMOD}/../lib/myproj.pretty")...)
+```
+
+So `kicad_fplib.py fork ... --into kicad/lib/<project>.pretty` followed by a
+re-scaffold (or a scaffold that has not run yet) is enough for the project's
+footprint library table to resolve every footprint in that directory,
+forked ones included, by `LIB:NAME` exactly as any other project-local part.
+No hand-edit of `fp-lib-table` is needed or wanted; see `references/
+kicad-api.md` §1's rule that copper and library tables are both generated,
+never hand-edited.
+
+### The three fields a fork carries
+
+A stock footprint already has `(descr ...)`, `(tags ...)`, and, where a 3D
+model exists, `(model ...)`. A fork does not invent new fields, it rewrites
+these three:
+
+- **`(descr ...)`** is a single-line free-text string. `kicad_fplib.py
+  annotate` appends a stamp to whatever was already there: `"<original> --
+  hw_forge fork: <NOTE> (source: <URL>, <DATE>)"`. The original text
+  survives, so a footprint forked twice keeps both stamps in order, readable
+  in KiCad's own footprint properties dialog without opening the file.
+- **`(tags ...)`** is a space-separated search-term string. `annotate` adds
+  the literal word `hw_forge-fork`, once, so a project's whole library can be
+  grepped or filtered for forked-and-modified footprints (`grep -l
+  hw_forge-fork lib/*.pretty/*.kicad_mod`) without reading `lib/
+  PROVENANCE.md` first.
+- **`(model ...)`** is the 3D-model attachment block, covered in full in §9
+  above (the AP214 assembly structure, the offset/rotate sign conventions,
+  and why a render is the only reliable verification). `kicad_fplib.py
+  set-model` writes or replaces this block using the `${KIPRJMOD}`-anchored
+  path convention every project-local model already uses (`kb/README.md`'s
+  "where a fact lives" table): `${KIPRJMOD}/3dmodels/NAME.step`, resolved by
+  `preflight.py`'s `resolve_model()` against the LIBRARY directory (the
+  `.pretty`'s own parent), not the board project directory. A shared
+  library serving two board variants at different depths would otherwise
+  resolve the same `${KIPRJMOD}` two different ways; anchoring it to the
+  library, once, is what makes a forked footprint's model resolve
+  identically regardless of which variant loads it.
+
+None of the three is optional to get right: a `(descr)`/`(tags)` stamp with
+no matching `lib/PROVENANCE.md` row is a footprint nobody can trace, and a
+`(model ...)` block with the wrong anchor is a path that looks correct and
+resolves to nothing (§9's "a footprint naming a model is not evidence that
+the model exists" trap, one level up from the model file itself). Run
+`preflight.py --project` after a `set-model` call, the same check gate 7
+already requires before trusting a provenance row.
