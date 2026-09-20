@@ -60,7 +60,8 @@ hw_forge/
 │       ├── kicad-ecosystem.md      # plugins, MCP servers, tools: adopt/evaluate/skip
 │       ├── electronics.md          # power topology, matrix routing, mirroring traps
 │       ├── mechanical.md           # inserts, screws, stack-ups, printability
-│       └── batteries.md            # cell tables, connectors, swell allowances
+│       ├── batteries.md            # cell tables, connectors, swell allowances
+│       └── silkscreen.md           # readability rules, placement algorithm, the phase-4 gate
 ├── scripts/                        # genericized, no project constants
 │   ├── preflight.py                # environment doctor + capability smoke test
 │   ├── kicad_gate.py               # ERC + DRC(parity) + unconnected, JSON, exit codes
@@ -72,6 +73,7 @@ hw_forge/
 │   ├── kicad_3d.py                 # STEP assembly export, verify, render
 │   ├── kicad_fpcheck.py            # pad geometry vs the declared package
 │   ├── packages.json               # nominal package dimensions, every number cited
+│   ├── kicad_silkcheck.py          # silk readability: floors, overlaps, orientation, labels
 │   ├── kicad_fplib.py              # fork and edit a project-local footprint: the fpcheck fix
 │   ├── kicad_bom.py                # BOM field audit + export; board-inherent items excluded
 │   ├── kicad_route.py              # autorouter bridge (Freerouting DSN/SES, KiCadRoutingTools) + adopt
@@ -223,6 +225,7 @@ What each piece of hw_forge is, and its state.
 | `kb/` cards | One card per domain-specific fact, tagged by domain | done |
 | `scripts/preflight.py` | The smoke-test rule made executable; reports whether an autorouter is reachable, non-fatally | done |
 | `scripts/kicad_fpcheck.py`, `scripts/packages.json` | Pad geometry against the declared package, with a cited nominal-dimension table | done |
+| `scripts/kicad_silkcheck.py`, `references/silkscreen.md` | Silk readability against the fab's floors: size/stroke, pad/text overlap, reading orientation, refdes distance, required labels by part class | done |
 | `scripts/kicad_bom.py` | BOM field completeness audit and export, with the board-inherent exclusion rule | done |
 | `scripts/kicad_fplib.py` | Fork a stock footprint into the project library and edit pads, model link, and provenance fields; the path from a finding to a fabbed change | done |
 | `scripts/hw_install.py` | Pinned, checksummed install of Freerouting, the Fabrication Toolkit, and KiCadRoutingTools; `--check` reports without downloading | done |

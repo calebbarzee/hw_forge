@@ -45,7 +45,7 @@ reported.
 | 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry — symbols, footprints, **and 3D models**: a resolved, render-verified 3D model per part, with provenance and license, or an explicit recorded negative for parts where none exists; every resolved footprint checked against the part's declared package with `kicad_fpcheck.py` (`agents/resource-scout.md` gate 7) |
 | 2 | **Logical design** | resolved part list | agent (or you, if small) | `design.py` imports clean under **both** system Python and the CAD Python; every net, pin map and topology fact derives from it |
 | 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0; there is no board yet, and a missing one is skipped rather than failed); `kicad_bom.py audit` exit 0: every sourced part carries description, manufacturer, MPN, package, datasheet, and LCSC where the assembly service needs it, and every board-inherent symbol is `in_bom no`; power-design decision record written |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity enforced**; 0 unconnected; zones filled headlessly inside the generator; and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`); autorouted copper, where the spec permits it, follows the hybrid flow in `references/autorouting.md` and is adopted back into the generator with `kicad_route.py adopt` |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity enforced**; 0 unconnected; zones filled headlessly inside the generator; and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`); autorouted copper, where the spec permits it, follows the hybrid flow in `references/autorouting.md` and is adopted back into the generator with `kicad_route.py adopt`; silk passes `kicad_silkcheck.py` at the floors the fab states (`references/silkscreen.md`) |
 | 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders inspected; the populated 3D assembly exported as its own mechanical-review artifact, distinct from the fab package; `kicad_fpcheck.py` re-run clean before any export; `kicad_bom.py audit` re-run clean, and `kicad_fab.py`'s BOM step fails on any empty required cell for a sourced part |
 | 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything green | agent + you | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
@@ -478,6 +478,7 @@ Load on demand. Do not read all of these up front.
 | `references/intake.md` | At phase 0, before drafting the question batch. The question bank by domain, the safe-default convention, and the worked case for why a package question is not optional. |
 | `references/orchestration.md` | Before writing any agent prompt, or planning waves. The prompt template and the wave rules live here. |
 | `references/autorouting.md` | Phase 4, when placement is irregular or the net count is high: the decision rule for scripted against autorouted copper, the hybrid flow with locked critical nets, the design-rule handoff before DSN export, post-route checks, and the tool comparison. |
+| `references/silkscreen.md` | Phase 4, before placing silk text, and for the silk pass of a revision: the size/stroke floors, reading-orientation rule, refdes placement, required labels by part class, the placement algorithm, and `kicad_silkcheck.py` as the phase-4 gate. |
 | `references/kicad-ecosystem.md` | Before adopting any KiCad plugin, MCP server, or third-party tool: what runs headless, install method, license, maintenance status, and an adopt, evaluate, or skip verdict. |
 | `references/kicad-api.md` | Any phase 1 to 5 work: `kicad-cli` invocations and flags, headless `pcbnew`, zone filling and island removal, project-file severity patching, s-expression parsing gotchas, the SWIG to IPC migration note, and STEP export (the AP214 assembly structure, `(model ...)` sign conventions, and proving a model change moved no copper). |
 | `references/electronics.md` | Phase 3, for power topology, decoupling policy, current budget, and the level-shift rule. Phase 4, for matrix and chain routing patterns, layer split, the mirroring traps, and reversible-board schemes. |
@@ -555,6 +556,13 @@ python3 scripts/kicad_scaffold.py DIR NAME          # project + lib tables + sev
 python3 scripts/kicad_fpcheck.py BOARD.kicad_pcb --design design.py
                                                     # pad geometry against the declared
                                                     # package; exit 1 on a FAIL
+python3 scripts/kicad_silkcheck.py BOARD.kicad_pcb [--require LABEL ...]
+                                                    # silk readability: size/stroke
+                                                    # floors, text-over-pad/text
+                                                    # overlap, reading rotation,
+                                                    # refdes distance, required
+                                                    # labels; exit 1 on an
+                                                    # error-severity finding
 python3 scripts/kicad_bom.py audit SCHEMATIC.kicad_sch [--board BOARD.kicad_pcb]
                                        [--design design.py] [--assembly jlcpcb]
                                                     # BOM field completeness and the

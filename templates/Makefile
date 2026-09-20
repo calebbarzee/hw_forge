@@ -10,6 +10,9 @@
 #   make check      validate only, no regeneration  <- the phase-4 gate
 #   make fpcheck    every footprint against its declared package (design.py
 #                   PACKAGES); a prerequisite of `fab`
+#   make silkcheck  silk readability: size/stroke floors, pad/text overlap,
+#                   reading orientation, refdes distance, required labels;
+#                   not a prerequisite of `fab`
 #   make bom        BOM field completeness and board-inherent exclusion; a
 #                   prerequisite of `fab`
 #   make warnings   every surviving finding, grouped by owner; rotates the
@@ -129,10 +132,10 @@ $(foreach t,$(TARGETS),$(eval $(t)_NAME ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_DIR  ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_AT   := $(HERE)$(patsubst ./,,$($(t)_DIR)/)))
 
-.PHONY: all preflight install-tools erc check fpcheck bom warnings fab renders case determinism clean \
+.PHONY: all preflight install-tools erc check fpcheck silkcheck bom warnings fab renders case determinism clean \
         scrub introspect export-dsn route-freerouting route-krt import-ses adopt $(TARGETS) \
         $(addprefix erc-,$(TARGETS)) $(addprefix check-,$(TARGETS)) \
-        $(addprefix fpcheck-,$(BOARDS)) $(addprefix bom-,$(BOARDS)) \
+        $(addprefix fpcheck-,$(BOARDS)) $(addprefix silkcheck-,$(BOARDS)) $(addprefix bom-,$(BOARDS)) \
         $(addprefix warnings-,$(TARGETS)) \
         $(addprefix fab-,$(BOARDS)) $(addprefix renders-,$(BOARDS))
 
@@ -258,6 +261,27 @@ fpcheck-$(1):
 	  --design $$(HERE)design.py
 endef
 $(foreach b,$(BOARDS),$(eval $(call FPCHECK_RULE,$(b))))
+
+# ------------------------------------------------------------- silk readability
+#
+# kicad_silkcheck.py: can a human read this silkscreen, not just is it
+# geometrically legal, which `check` already proves. Size/stroke floors,
+# text-over-pad/text overlap, reading orientation, refdes distance from its
+# own footprint, and required labels (--require / --require-file). Run after
+# DRC, not instead of it. See references/silkscreen.md.
+#
+# Deliberately NOT a prerequisite of `fab`: unlike fpcheck and bom, nothing in
+# the silkscreen reference requires gating fab exports on it. Run it
+# explicitly, or wire it into a project's own `fab` recipe if that project's
+# fab house demands it.
+
+silkcheck: $(addprefix silkcheck-,$(BOARDS))
+
+define SILKCHECK_RULE
+silkcheck-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_silkcheck.py $$($(1)_AT)$$($(1)_NAME).kicad_pcb
+endef
+$(foreach b,$(BOARDS),$(eval $(call SILKCHECK_RULE,$(b))))
 
 # -------------------------------------------------------------------- BOM
 #

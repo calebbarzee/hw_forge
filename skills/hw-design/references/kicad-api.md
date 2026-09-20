@@ -393,6 +393,32 @@ If anyone then runs Annotate in the GUI, KiCad silently renames the part, for
 example `SW_PWR` to `SW23`, breaking every generator constant and BOM note keyed
 on the old reference.
 
+### Trap: `GetLayerName()` is the human-readable name, not the canonical one
+
+`item.GetLayerName()` returns KiCad's *display* string for a layer, "F.Silkscreen",
+not the canonical name the file format and every other API surface use,
+"F.SilkS". Filtering an obstacle collector on
+`item.GetLayerName() in ("F.SilkS", "B.SilkS")` is therefore always false, and
+the failure is silent: the collector runs, returns an empty set, and nothing
+raises.
+
+Cost, measured: an obstacle collector built this way excluded every
+footprint-owned silk graphic (corner ticks, cathode bars, a module's
+polarity marker) from an entire generation pass. The silk-label placement
+routine reported success on every call, because from its point of view no
+footprint silk ever occupied the space it was searching. The DRC run
+immediately after found real `silk_overlap` violations against exactly the
+excluded items.
+
+Compare `item.GetLayer()` (the integer layer ID, `pcbnew.F_SilkS` /
+`pcbnew.B_SilkS`) instead of the string. General rule: **never filter a
+`pcbnew` layer by its display-name string**; match the integer ID, or the
+canonical name read from a `.kicad_pcb` file's own `(layer ...)` token, which
+is `F.SilkS`, not `GetLayerName()`'s `F.Silkscreen`.
+
+Source: the z_board silkscreen pass, 2026-09-20
+(`kb/keyboards/silkscreen-readability.md`).
+
 ## 5. Reading files as text (s-expressions)
 
 Reading is what this is good for. Parsing a footprint's pads out of

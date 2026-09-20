@@ -51,7 +51,7 @@ Run the gate yourself. Do not infer it.
 python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
 ```
 
-Six criteria, all required:
+Seven criteria, all required:
 
 1. **DRC 0 at error severity, with schematic parity.** Parity is not optional. A
    board can be geometrically perfect and wired to a netlist that is not the
@@ -119,6 +119,11 @@ Six criteria, all required:
    the sanctioned cause. That is a claim the demotion has to keep making every
    revision, not once at the demotion, and `--by-owner` is what re-proves it.
 
+7. **Silk passes `kicad_silkcheck.py` at the floors the fab states.** DRC has
+   nothing to say about whether a human can read the silkscreen; this is the
+   separate check for that. Run it after DRC, not instead of it. See
+   `references/silkscreen.md`.
+
 ## Method
 
 **Nudge, do not prove.** Generate, read the DRC JSON, move one named constant,
@@ -176,6 +181,11 @@ wrong. Re-read the records.
   rules file, justified in the project notes, and above every candidate fab's
   stated minimum. **Never demote a severity to make a violation disappear
   without saying so in the report.**
+- Silk text is placed by the generator's own candidate-search routine, never
+  hand-picked coordinates. Load `references/silkscreen.md` for the rule set
+  (size/stroke floors, reading orientation, refdes placement, required labels
+  by part class) and the placement algorithm, and gate the pass with
+  `python3 scripts/kicad_silkcheck.py BOARD.kicad_pcb`.
 
 ## Adopting hand placements: the re-entry path
 
