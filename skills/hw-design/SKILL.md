@@ -42,12 +42,13 @@ reported.
 | # | Phase | Entry contract | Owner | Exit gate |
 |---|---|---|---|---|
 | 0 | **Spec lock** | a device idea | you + user | `SPEC.md`: the intake question bank (`references/intake.md`) asked in one batch, locked choices and delegated defaults both recorded verbatim, placement intent and rules recorded as blocks; every "must answer" question is answered or explicitly delegated |
-| 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry — symbols, footprints, **and 3D models**: a resolved, render-verified 3D model per part, with provenance and license, or an explicit recorded negative for parts where none exists; every resolved footprint checked against the part's declared package with `kicad_fpcheck.py` (`agents/resource-scout.md` gate 7) |
+| 1 | **Libraries + research** | locked spec | `resource-scout` | every part resolves; provenance manifest per vendored asset; pin tables verified against two independent sources; zero hand-authored geometry (symbols, footprints, **and 3D models**): a resolved, render-verified 3D model per part, with provenance and license, or an explicit recorded negative for parts where none exists; every resolved footprint checked against the part's declared package with `kicad_fpcheck.py` (`agents/resource-scout.md` gate 7) |
 | 2 | **Logical design** | resolved part list | agent (or you, if small) | `design.py` imports clean under **both** system Python and the CAD Python; every net, pin map and topology fact derives from it |
-| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0; there is no board yet, and a missing one is skipped rather than failed); `kicad_bom.py audit` exit 0: every sourced part carries description, manufacturer, MPN, package, datasheet, and LCSC where the assembly service needs it, and every board-inherent symbol is `in_bom no`; power-design decision record written |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity enforced**; 0 unconnected; zones filled headlessly inside the generator; and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`); autorouted copper, where the spec permits it, follows the hybrid flow in `references/autorouting.md` and is adopted back into the generator with `kicad_route.py adopt`; silk passes `kicad_silkcheck.py` at the floors the fab states (`references/silkscreen.md`) |
-| 5 | **Fab outputs** | gated board | `fab-docs-engineer` | export assertions pass; renders inspected; the populated 3D assembly exported as its own mechanical-review artifact, distinct from the fab package; `kicad_fpcheck.py` re-run clean before any export; `kicad_bom.py audit` re-run clean, and `kicad_fab.py`'s BOM step fails on any empty required cell for a sourced part |
-| 6 | **Enclosure** | gated board files | `case-engineer` | all numeric `verify()` checks pass; shells are valid single solids; printability rules hold |
+| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py DIR --sch-only`, exit 0; there is no board yet, and a missing one is skipped rather than failed); `kicad_bom.py audit` exit 0: every sourced part carries description, manufacturer, MPN, package, datasheet, and LCSC where the assembly service needs it, and every board-inherent symbol is `in_bom no`; `kicad_schrules.py SCHEMATIC.kicad_sch` exit 0: no error-severity finding for decoupling, bulk capacitance, LED data resistor, or I2C and reset pull-ups; connector input protection is warning severity, so each of its findings is read and either fixed or waived; every waiver carries a reason recorded in the power decision record; power-design decision record written |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity **with schematic parity enforced**; 0 unconnected; zones filled headlessly inside the generator; and a wipe-and-rebuild reproducing the same canonical geometry (`kicad_digest.py`); autorouted copper, where the spec permits it, follows the hybrid flow in `references/autorouting.md` and is adopted back into the generator with `kicad_route.py adopt`; silk passes `kicad_silkcheck.py` at the floors the fab states (`references/silkscreen.md`); `kicad_ifcheck.py --board` exit 0 (every declared connector wired to its standard); `kicad_geom.py --contract` exit 0 (every connector declares `mating_direction`, and its mating face points out through its edge), and the contract file handed to phase 6. `make check` is the DRC half of this gate; `make review` (phase 5a) runs the whole of it |
+| 5 | **Fab outputs** | gated board that has passed the pre-order review (5a) | `fab-docs-engineer` | export assertions pass; renders inspected; the populated 3D assembly exported as its own mechanical-review artifact, distinct from the fab package; `kicad_fpcheck.py` re-run clean before any export; `kicad_bom.py audit` re-run clean, and `kicad_fab.py`'s BOM step fails on any empty required cell for a sourced part |
+| 5a | **Pre-order review** | gated board plus fab profile. Runs after phase 4 and before the phase 5 fab export (it exports into a scratch directory itself), and again after phase 6 when an enclosure is in scope, so the case row is real | you | `python3 scripts/hw_review.py PROJECT_DIR [--case CHECKS.py] [--fab PROFILE] [--assembly jlcpcb\|none] [--rules FILE] [--strict-interfaces]` exit 0: preflight, gate, fpcheck, BOM, schrules, silk, interfaces, fit contract, case, fab assertions and 3D assembly in one table; every SKIP or WARN in it relayed to the user as a property not proven. Nothing is ordered before this passes |
+| 6 | **Enclosure** | gated board files and the fit contract | `case-engineer` | all numeric `verify()` checks pass, including the contract-driven `board_in_cavity`, `cavity_clearance`, `connector_openings`, `min_wall` and `fastener_stackup` (`case_verify.py --contract FIT.json`); shells are valid single solids; printability rules hold |
 | 7 | **Docs + hygiene + harvest** | everything green | agent + you | docs describe the as-built state; gates still pass after cleanup; new lessons written into KB cards |
 
 **Phase 4's parity requirement needs its own sentence, because passing the flag
@@ -74,7 +75,9 @@ Two ordering facts that are easy to get wrong:
 - **The enclosure reads geometry out of the board files**, via
   `python3 scripts/kicad_geom.py BOARD.kicad_pcb --json`. That gives the
   outline, hole positions, footprint positions, courtyards, and which face each
-  part's hardware actually protrudes on. Never work from a spec table alone. A
+  part's hardware actually protrudes on. `--contract FIT.json --design
+  design.py` writes the same facts plus part heights and mating faces as the
+  fit contract the case checks consume. Never work from a spec table alone. A
   spec table records what the board was supposed to be.
 - **The populated 3D assembly is the other half of that geometry read.**
   `kicad_geom.py` gives coordinates; the assembly, produced in phase 5 and
@@ -203,6 +206,18 @@ cached fills, and nothing revalidates until KiCad reopens the file. Text edits
 are acceptable for metadata and for placement coordinates you can prove local.
 Copper, never. If the fix is not expressible in the generator, the generator is
 what needs fixing. See `references/kicad-api.md` §1.
+
+**Connectors and user-facing parts carry their mating direction and height in
+`design.py`.** Every connector, button, switch, display, knob, and LED seen
+through the case has `mating_direction` (footprint-local axes, as drawn in the
+library) and `height_mm` or `z_band` in the `PARTS` table, and every
+standardized connector has `interface` (`templates/design.py`). The board file
+carries none of these, and without them the fit contract, the interface check,
+and the case's opening checks have nothing to test: a USB-C receptacle facing
+inboard passed every other gate (`docs/BACKLOG.md` B8). Phase 1 fills them from
+`kb/interfaces/` and the datasheet; the emitters also write them onto the
+footprint as properties of the same names. The process this feeds is
+`docs/QUALITY.md`.
 
 **Generate symbol and footprint from one pin table.** A symbol whose pin
 numbering disagrees with its footprint swaps power and data across every
@@ -484,6 +499,9 @@ Load on demand. Do not read all of these up front.
 | `references/electronics.md` | Phase 3, for power topology, decoupling policy, current budget, and the level-shift rule. Phase 4, for matrix and chain routing patterns, layer split, the mirroring traps, and reversible-board schemes. |
 | `references/mechanical.md` | Phase 6: heat-set inserts, screw-length stack-up arithmetic, air-gap ledgers, clamp against pass-through fastening, printability rules, and tolerance defaults. |
 | `references/batteries.md` | Phase 0 or 3, when a cell is in scope: cell naming and size tables, capacity, connectors and mated heights, and swell allowance. |
+| `docs/QUALITY.md` | Phase 0, to plan which properties the run must prove, and phase 5a, to read the pre-order table: the property sequence, the check behind each, the three failure classes, and what a green table does not prove. |
+| `references/domains.md` | Phase 0, to name the electrical domains the design touches in `SPEC.md`; phases 3 and 4, to carry each named domain's rules into the agent prompts. Per domain: the failure modes the generic gates cannot see and the check that establishes each. |
+| `references/interfaces.md` | Phase 1 and 3, for every standardized connector: pinout, the required circuit, polarity, `mating_direction` for stock footprints, panel opening, and the rule ids `kicad_ifcheck.py` reports. |
 
 Domain specifics, such as key-switch geometry, a firmware's pin quirks, or a
 particular module's pinout, are not in the references. They are knowledge-base
@@ -552,7 +570,11 @@ python3 scripts/kicad_geom.py BOARD.kicad_pcb [--json]     # outline, holes, pos
 python3 scripts/kicad_digest.py BOARD.kicad_pcb [--compare A B]
                                                     # canonical KIID-free digest:
                                                     # the determinism check
-python3 scripts/kicad_scaffold.py DIR NAME          # project + lib tables + severities
+python3 scripts/kicad_scaffold.py DIR NAME [--fork-rules] [--reinstall-rules]
+                                                    # project + lib tables + severities
+                                                    # + NAME.kicad_dru: baseline only
+                                                    # when absent; fork block managed
+                                                    # between marker lines
 python3 scripts/kicad_fpcheck.py BOARD.kicad_pcb --design design.py
                                                     # pad geometry against the declared
                                                     # package; exit 1 on a FAIL
@@ -571,6 +593,13 @@ python3 scripts/kicad_bom.py audit SCHEMATIC.kicad_sch [--board BOARD.kicad_pcb]
 python3 scripts/kicad_bom.py export SCHEMATIC.kicad_sch -o OUT.csv [--assembly jlcpcb]
                                                     # the kicad-cli BOM export, re-checked
                                                     # for empty required cells
+python3 scripts/kicad_schrules.py SCHEMATIC.kicad_sch [--rules FILE] [--set RULE.KEY=VALUE]
+                                       [--json] [--selftest]
+                                                    # schematic rules ERC does not cover:
+                                                    # decoupling, bulk capacitance, LED
+                                                    # data resistor, pull-ups, connector
+                                                    # input protection; exit 1 on an
+                                                    # error finding, 2 on a tool failure
 python3 scripts/kicad_fplib.py fork LIB:NAME --into kicad/lib/<proj>.pretty
                                                     # fork and edit a project-local
                                                     # footprint: the path from a
@@ -585,7 +614,26 @@ python3 scripts/hw_install.py --check|--router|--jlc-plugin|--routing-tools|--al
                                                     # pinned, checksummed installs of
                                                     # the optional tools; --check only
                                                     # reports
-python3 scripts/case_verify.py CHECKS.py            # numeric interference checks
+python3 scripts/kicad_ifcheck.py SCH --design design.py [--board BOARD.kicad_pcb]
+                                       [--allow-undefined]
+                                                    # each declared connector against
+                                                    # its interface definition, rule
+                                                    # ids from references/interfaces.md;
+                                                    # exit 1 on a FAIL
+python3 scripts/kicad_geom.py BOARD.kicad_pcb --contract FIT.json --design design.py
+                                                    # the fit contract; exit 1 when a
+                                                    # connector declares no
+                                                    # mating_direction, or its face
+                                                    # does not point out through its edge
+python3 scripts/case_verify.py CHECKS.py [--contract FIT.json]
+                                                    # numeric interference checks, and
+                                                    # the contract-driven fit checks
+python3 scripts/hw_review.py PROJECT_DIR [--case CHECKS.py] [--fab PROFILE]
+                                       [--assembly jlcpcb|none] [--rules FILE]
+                                       [--strict-interfaces]
+                                                    # the pre-order gate: every check,
+                                                    # one readiness table; exit 1 on a
+                                                    # FAIL
 python3 scripts/report.py FILE.json                 # one-line summary of a kicad-cli report
 ```
 
@@ -598,8 +646,8 @@ Scripts discover `kicad-cli` and `pcbnew` on their own, from platform defaults
 including `/Applications/KiCad/KiCad.app/...` on darwin. `KICAD_ROOT` overrides
 that discovery.
 
-`templates/Makefile` wires these into per-project `make`, `make check`, and
-`make fab` targets. Give every project one, so that regeneration and validation
+`templates/Makefile` wires these into per-project `make`, `make check`,
+`make review`, and `make fab` targets; `fab` depends on `review`. Give every project one, so that regeneration and validation
 are each a single command. That is what makes the nudge loop cheap enough to be
 the primary method.
 

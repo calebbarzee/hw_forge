@@ -5,7 +5,7 @@ The artifact a case engineer checks the enclosure against: the board plus every
 component body, in the board's own coordinate frame.  This is not a fab output.
 `kicad_fab.py` produces what a board house sees; nothing here reaches one.
 
-Three subcommands:
+Three subcommands for the assembly, plus `extent` (below) for one model:
 
   export   kicad-cli pcb export step, with the flags that matter chosen and
            explained rather than defaulted.
@@ -62,8 +62,26 @@ or floating above it, in a single command.
 So the division of labour is: `verify` tells you *where* every model is placed
 and which ones are turned over, the render tells you whether that is right.
 
-Python 3 stdlib only for the parsing half, so `verify` runs on a STEP file with
-no KiCad present.  `--board` shells out to KiCad's bundled interpreter.
+A fourth subcommand, and the function behind it
+-----------------------------------------------
+  extent   the bounding box of ONE footprint's model file, and its z band once
+           the footprint's `(model ... (offset) (scale) (rotate))` is applied.
+
+`kicad_geom.py --contract` calls `model_extent()` and `placed_z_band()` to give
+a part a height when `design.py` does not declare one.  The sweep over every
+3D `CARTESIAN_POINT` that is wrong for an assembly export (above) is right for
+a single-part model file, because nothing in that file is placed by a transform
+chain.  A model file that is itself an assembly (it carries a
+`NEXT_ASSEMBLY_USAGE_OCCURRENCE`, which is how a code-CAD compound exports)
+has each child's points carried through its placement first; one whose chain
+cannot be read is reported as such and given no extent, rather than a
+confidently wrong one.  B-spline control points can sit outside
+the surface they shape, so the box is conservative: never smaller than the
+part, occasionally larger.
+
+Python 3 stdlib only for the parsing half, so `verify` and `extent` run on a
+STEP file with no KiCad present.  `--board` shells out to KiCad's bundled
+interpreter.
 """
 
 import argparse
@@ -265,6 +283,173 @@ def product_name(entities, product_definition):
         return ""
 
 
+# ------------------------------------------------------------ one model's box
+
+_POINT3 = re.compile(r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
+                     r"([-+\d.eE]+)\s*,\s*([-+\d.eE]+)\s*,\s*([-+\d.eE]+)\s*\)")
+
+
+def model_extent(path):
+    """({min: [x,y,z], max: [x,y,z], points: N}, None) or (None, reason).
+
+    Valid for a single-part model file only; see the module docstring.  The
+    2-coordinate CARTESIAN_POINTs a STEP file uses for curves in a surface's
+    parameter space are skipped by the pattern, which needs three numbers.
+    """
+    try:
+        with open(path, errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        return None, str(exc)
+    scale = 25.4 if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'INCH'",
+                              text) else 1.0
+    if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in text:
+        points = _assembly_points(parse_entities(text))
+        if points is None:
+            return None, ("model file is a nested or unreadable assembly; a "
+                          "raw sweep is not its extent")
+    else:
+        points = []
+        for match in _POINT3.finditer(text):
+            try:
+                points.append([float(v) for v in match.groups()])
+            except ValueError:
+                continue
+    lo, hi, count = [float("inf")] * 3, [float("-inf")] * 3, 0
+    for p in points:
+        count += 1
+        for i in range(3):
+            lo[i] = min(lo[i], p[i] * scale)
+            hi[i] = max(hi[i], p[i] * scale)
+    if not count:
+        return None, "no 3D CARTESIAN_POINT in the file"
+    return {"min": [round(v, 4) for v in lo], "max": [round(v, 4) for v in hi],
+            "points": count}, None
+
+
+_REP_REL = re.compile(r"REPRESENTATION_RELATIONSHIP\s*\(\s*'[^']*'\s*,\s*"
+                      r"'[^']*'\s*,\s*#(\d+)\s*,\s*#(\d+)")
+_REP_XFORM = re.compile(r"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"
+                        r"\s*\(\s*#(\d+)")
+
+
+def _assembly_points(entities, max_depth=16):
+    """Every 3D point of an assembly model file, placed in the model frame.
+
+    A code-CAD compound exported as STEP (build123d, CadQuery) is an assembly:
+    each child's geometry sits in its own frame and a transform places it.
+    Each child representation, and the geometry representations linked to it,
+    is walked for its points, which are then carried up the parent chain.
+    Points no child owns are taken as already in the model frame.  Returns
+    None for a chain deeper than `max_depth` or a transform it cannot read.
+    """
+    parent_of = {}
+    for kind, args in entities.values():
+        if kind != "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION":
+            continue
+        r = refs(args)
+        rr_args = entities.get(r[0], ("", ""))[1] if r else ""
+        rel, xform = _REP_REL.search(rr_args), _REP_XFORM.search(rr_args)
+        if not (rel and xform):
+            return None
+        ax = refs(entities.get(int(xform.group(1)), ("", ""))[1])
+        if len(ax) < 2:
+            return None
+        rot, org = compose_inverse(*(placement_matrix(entities, ax[0])
+                                     + placement_matrix(entities, ax[1])))
+        parent_of[int(rel.group(1))] = (int(rel.group(2)), rot, org)
+
+    linked = {}
+    for kind, args in entities.values():
+        if kind == "SHAPE_REPRESENTATION_RELATIONSHIP":
+            r = refs(args)
+            if len(r) >= 2:
+                linked.setdefault(r[0], set()).add(r[1])
+                linked.setdefault(r[1], set()).add(r[0])
+
+    def to_root(rep):
+        rot = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        org = (0.0, 0.0, 0.0)
+        for _ in range(max_depth):
+            if rep not in parent_of:
+                return rot, org
+            rep, prot, porg = parent_of[rep]
+            org = tuple(sum(prot[i][k] * org[k] for k in range(3)) + porg[i]
+                        for i in range(3))
+            rot = tuple(tuple(sum(prot[i][k] * rot[k][j] for k in range(3))
+                              for j in range(3)) for i in range(3))
+        return None
+
+    def reach(start):
+        seen, stack = set(), [start]
+        while stack:
+            ident = stack.pop()
+            if ident in seen or ident not in entities:
+                continue
+            seen.add(ident)
+            stack.extend(refs(entities[ident][1]))
+        return seen
+
+    def point(ident):
+        kind, args = entities[ident]
+        if kind != "CARTESIAN_POINT":
+            return None
+        vals = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?",
+                          args.split("(", 1)[-1])
+        return [float(v) for v in vals[:3]] if len(vals) >= 3 else None
+
+    owned, out = set(), []
+    for rep in parent_of:
+        chain = to_root(rep)
+        if chain is None:
+            return None
+        rot, org = chain
+        group = {rep} | (linked.get(rep) or set())
+        for start in group:
+            for ident in reach(start):
+                p = point(ident)
+                if p is None or ident in owned:
+                    continue
+                owned.add(ident)
+                out.append([sum(rot[i][k] * p[k] for k in range(3)) + org[i]
+                            for i in range(3)])
+    for ident in entities:
+        if ident not in owned:
+            p = point(ident)
+            if p is not None:
+                out.append(p)
+    return out
+
+
+def placed_z_band(extent, offset=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0),
+                  rotate=(0.0, 0.0, 0.0)):
+    """[z_lo, z_hi] of a model above its footprint's mounting face, in mm.
+
+    KiCad places a model as  offset + Rz(-rz) . Ry(-ry) . Rx(-rx) . S . p
+    (the 3D viewer and the STEP exporter compose it in that order).  Rz cannot
+    change z, so only the x and y rotations matter here.  The sign of a 90
+    degree x or y rotation decides which model axis becomes height; 0 and 180
+    are sign-proof.  A caller that cares labels a 90/270 result as such.
+    """
+    lo, hi = extent["min"], extent["max"]
+    ax, ay = math.radians(-rotate[0]), math.radians(-rotate[1])
+    zs = []
+    for x in (lo[0], hi[0]):
+        for y in (lo[1], hi[1]):
+            for z in (lo[2], hi[2]):
+                x1, y1, z1 = x * scale[0], y * scale[1], z * scale[2]
+                z2 = y1 * math.sin(ax) + z1 * math.cos(ax)     # about x
+                z3 = -x1 * math.sin(ay) + z2 * math.cos(ay)    # about y
+                zs.append(z3 + offset[2])
+    return [round(min(zs), 4), round(max(zs), 4)]
+
+
+def rotation_is_sign_proof(rotate):
+    """True when the x and y rotations are multiples of 180 degrees."""
+    return all(abs((r % 180.0)) < 1e-6 or abs((r % 180.0) - 180.0) < 1e-6
+               for r in rotate[:2])
+
+
 # --------------------------------------------------------- board-side lookup
 
 FACE_PROBE = r"""
@@ -444,6 +629,26 @@ def cmd_render(args):
     return 0
 
 
+def cmd_extent(args):
+    extent, why = model_extent(args.step)
+    if extent is None:
+        print("%s: no extent (%s)" % (args.step, why))
+        return 1
+    band = placed_z_band(extent, args.offset, args.scale, args.rotate)
+    if args.json:
+        print(json.dumps({"extent": extent, "z_band": band}, indent=2))
+        return 0
+    print("%s" % args.step)
+    print("  model bbox  x %.3f..%.3f  y %.3f..%.3f  z %.3f..%.3f  (%d points)"
+          % (extent["min"][0], extent["max"][0], extent["min"][1],
+             extent["max"][1], extent["min"][2], extent["max"][2],
+             extent["points"]))
+    print("  placed z    %.3f..%.3f above the mounting face%s"
+          % (band[0], band[1], "" if rotation_is_sign_proof(args.rotate)
+             else "  (x/y rotation not a multiple of 180: sign-dependent)"))
+    return 0
+
+
 def require_cli():
     cli, how = find_cli()
     if not cli:
@@ -494,6 +699,17 @@ def main():
     r.add_argument("--zoom", type=float, default=1.4)
     r.add_argument("--quality", default="high")
     r.set_defaults(func=cmd_render)
+
+    x = sub.add_parser("extent", help="one model file's bounding box and "
+                                      "its placed z band")
+    x.add_argument("step")
+    for name, default in (("offset", 0.0), ("scale", 1.0), ("rotate", 0.0)):
+        x.add_argument("--" + name, type=float, nargs=3,
+                       default=[default] * 3, metavar=("X", "Y", "Z"),
+                       help="the footprint's (model (%s (xyz ...))) values"
+                            % name)
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(func=cmd_extent)
 
     args = ap.parse_args()
     sys.exit(args.func(args))

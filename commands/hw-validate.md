@@ -105,6 +105,7 @@ power delivery, chain order), run this second pass.
    | Polarity | diode/cap pin-1-vs-pin-2 across all instances | the same convention on every instance |
    | No-connects | spare pins and named nets | spares explicitly NC'd, and no single-node named nets |
    | Package | every footprint's pad geometry against its declared package (`kicad_fpcheck.py BOARD --design design.py`) | PASS, or an explained WARN or FAIL naming the rule that fired; footprints checked only against their own name are named as such |
+   | Schematic rules | decoupling on every IC power pin, bulk capacitance per rail, series resistor on the first addressable LED, pull-ups on I2C and reset nets, protection on connector power inputs (`kicad_schrules.py SCHEMATIC.kicad_sch`) | exit 0, meaning no error-severity finding; each warning and each waiver is listed with its reason. Connectivity only: placement distance is a board check |
 
 4. **Symbol pin semantics vs footprint pad numbering**, for every non-stock
    part. It is the one error class that passes ERC, DRC, *and* parity while

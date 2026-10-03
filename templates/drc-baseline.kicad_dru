@@ -1,0 +1,55 @@
+(version 1)
+# hw_forge baseline custom design rules.  kicad_scaffold.py installs this as
+# NAME.kicad_dru in every new project.  Every keyword here compiles on stock
+# KiCad 10.0.5; fork-only keywords live in drc-fork.kicad_dru and are never
+# added here, because stock kicad-cli drops a whole rule file that holds one
+# unknown keyword, silently and with exit 0, which would disable every rule
+# below with it (measured 2026-10-03: a bogus keyword took a firing
+# hole_to_hole rule from 112 hits to 0).
+#
+# Each number is a fab floor read from kb/fabs/jlcpcb.md (JLCPCB capability
+# page, read 2026-08-22), and each is a PARAM: replace it with the chosen
+# fab's own figure, and never loosen it below that fab's floor.  A "#"
+# comment must sit on its own line.  Later rules take precedence over
+# earlier ones when two match the same items.
+
+# Drill web between two plated holes.  JLCPCB 0.45 mm; KiCad's board default
+# is 0.25, looser than the fab.  Vias carry no Pad_Type, so via pairs stay on
+# the board-level min_hole_to_hole.  PARAM: fab PTH hole-to-hole.
+(rule "pth_hole_to_hole"
+	(constraint hole_to_hole (min 0.45mm))
+	(condition "A.Pad_Type == 'Through-hole' && B.Pad_Type == 'Through-hole'"))
+
+# Plated drill to other copper.  JLCPCB 0.28 mm; KiCad default 0.25.
+# PARAM: fab PTH drill-to-copper.
+(rule "pth_hole_to_copper"
+	(constraint hole_clearance (min 0.28mm))
+	(condition "A.Pad_Type == 'Through-hole' || B.Pad_Type == 'Through-hole'"))
+
+# Annular ring floor on vias.  JLCPCB 0.15 mm absolute minimum (0.2
+# recommended); KiCad default 0.10.  PARAM: fab via annular ring.
+(rule "via_annular_ring"
+	(constraint annular_width (min 0.15mm))
+	(condition "A.Type == 'Via'"))
+
+# Annular ring floor on plated component holes.  Same fab floor.
+# PARAM: fab PTH annular ring.
+(rule "pth_annular_ring"
+	(constraint annular_width (min 0.15mm))
+	(condition "A.Pad_Type == 'Through-hole'"))
+
+# Via drill floor.  0.3 mm is the 2-layer standard drill at JLCPCB with no
+# price adder; smaller is buildable on 4-layer (0.15) at extra cost.
+# PARAM: fab via drill.
+(rule "via_drill_floor"
+	(constraint hole_size (min 0.3mm))
+	(condition "A.Type == 'Via'"))
+
+# Connector copper to the board edge.  A connector's pads legitimately sit
+# near the outline; the board-level min_copper_edge_clearance (0.5 mm in the
+# scaffolded default set) would flag them, and the fab floor is 0.2 mm at
+# JLCPCB.  0.3 leaves 0.1 mm over it.  Matches refs J* and USB*.
+# PARAM: fab copper-to-routed-edge; the reference prefixes this project uses.
+(rule "connector_copper_to_edge"
+	(constraint edge_clearance (min 0.3mm))
+	(condition "A.Reference == 'J*' || A.Reference == 'USB*'"))

@@ -51,7 +51,7 @@ Run the gate yourself. Do not infer it.
 python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
 ```
 
-Seven criteria, all required:
+Eight criteria, all required:
 
 1. **DRC 0 at error severity, with schematic parity.** Parity is not optional. A
    board can be geometrically perfect and wired to a netlist that is not the
@@ -123,6 +123,22 @@ Seven criteria, all required:
    nothing to say about whether a human can read the silkscreen; this is the
    separate check for that. Run it after DRC, not instead of it. See
    `references/silkscreen.md`.
+
+8. **Every declared connector passes `kicad_ifcheck.py`, and the fit contract
+   exits 0.**
+
+   ```bash
+   python3 scripts/kicad_ifcheck.py PROJECT.kicad_sch --design design.py --board BOARD.kicad_pcb
+   python3 scripts/kicad_geom.py BOARD.kicad_pcb --contract FIT.json --design design.py
+   ```
+
+   The contract fails a connector whose mating face does not point out
+   through its nearest board edge within the stated distance, which is the
+   check that would have caught `docs/BACKLOG.md` B8. It reads
+   `mating_direction`, `height_mm` and `interface` from `design.py`'s
+   `PARTS`, in footprint-local axes as the library draws the footprint. If a
+   connector or user-facing part lacks them, that is a handback to the
+   schematic phase, not a value you invent.
 
 ## Method
 
@@ -254,21 +270,26 @@ against the current board.
 Two things phase 6 cannot get anywhere else, because only the board phase can
 see them.
 
-**Every edge connector's mating face points outboard.** State it in the
-census in words, per connector: which edge, which direction the plug enters.
+**The fit contract is the handoff.** Emit `FIT.json` with
+`kicad_geom.py --contract` from the gated board and name its path in your
+report. It carries, per connector and user-facing part, the wall the mating
+face points through, the distance from the body to that edge, and the opening
+the case must provide: its span along the wall and its z band. The per-wall
+opening census is now that file. Do not restate its numbers in prose; name the
+file and the parts in it.
+
 A receptacle placed pad-end-at-edge with its mating face inboard passes DRC,
 courtyard, and every numeric case check, and cannot be plugged in
-(`docs/BACKLOG.md` B8, measured on z_board 2026-09-20). Until a script checks
-it, you are the check.
+(`docs/BACKLOG.md` B8, measured on z_board 2026-09-20). The contract fails
+that board; your report states the contract's verdict.
 
-**A per-wall opening census.** For each board edge, hand over every feature that
-will need an opening in that wall, with its in-plane span and its z band.
-
-Rotating a module can put two openings on one wall, overlapping in plan and
-separated only by the PCB. Every per-feature check then passes while the only
-thing between the two openings is 1.6 mm of PCB and two rabbets. The board phase
-is where two features end up on the same edge, which is why this is the board
-phase's line to write. Measured case: `kb/projects/hexpad.md` §3.4.
+**Two openings on one wall.** Rotating a module can put two openings on one
+wall, overlapping in plan and separated only by the PCB. Every per-feature
+check then passes while the only thing between the two openings is 1.6 mm of
+PCB and two rabbets. Measured case: `kb/projects/hexpad.md` §3.4. The contract
+gives every opening its wall, span and z band, so the pair is visible in one
+file; name it in your report when two share a wall, because the board phase
+is where two features end up on the same edge.
 
 **Generated geometry, not typed geometry.** A handoff table is prose, and the
 case generator that reads the board never looks at it. The numbers most likely
@@ -299,7 +320,7 @@ or forces a materially worse board, stop and return:
 BARRIER
 Blocked:         what cannot be done, and which gate it fails
 Locked decision: the exact decision in conflict
-Why:             the mechanism, with evidence — violation counts, measured
+Why:             the mechanism, with evidence: violation counts, measured
                  clearances, the report record that shows it
 Options:         A / B / C, each with cost and what it gives up
 Recommendation:  which, and why
@@ -313,7 +334,7 @@ Then stop. Grinding and silent deviation are both violations.
 REPORT
 Status:     the gate command run, and its output verbatim, for THIS variant and
             every sibling variant
-Changed:    files touched, what changed in each — including any position-only
+Changed:    files touched, what changed in each, including any position-only
             edit to design.py (which array, old and new coordinates)
 Numbers:    DRC violations before/after; footprints, tracks, vias; filled area
             per zone; any warnings left and why each is deliberate; on a rev, the
@@ -321,8 +342,8 @@ Numbers:    DRC violations before/after; footprints, tracks, vias; filled area
 Decisions:  layer assignments, lane orderings, any rule relaxation, and why
 Rejected:   what you tried that did not work, and the evidence
 For the next agent:
-  - the per-wall opening census: per board edge, every feature needing an
-    opening, with its in-plane span and z band, each number either quoted from
+  - the fit contract: its path, its verdict, and any part with an unknown
+    height or no mating_direction; any number outside it either quoted from
     kicad_geom.py with its key named or flagged hand-derived
   - diagnosis of the current state
   - the named constants worth touching, with file:line and present values

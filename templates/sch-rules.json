@@ -1,0 +1,108 @@
+{
+  "_doc": {
+    "_about": "Defaults for scripts/kicad_schrules.py. A project copies this file, keeps only the keys it changes, and passes it with --rules. Keys starting with an underscore are ignored. Unknown keys are an error, so a typo cannot silently disable a check.",
+    "prefixes": "Regexes matched against the whole reference prefix (the letters before the first digit, so LED13 gives LED). C[A-Z]* covers C, CB and CF; R covers R only. A key may also be a list of regexes.",
+    "prefixes.capacitor": "Reference prefix of capacitors. Every capacitance lookup uses it.",
+    "prefixes.resistor": "Reference prefix of resistors. Series resistor and pull-up lookups use it.",
+    "prefixes.diode": "Reference prefix of diodes. A diode on a connector net counts as protection when its value or library part matches patterns.tvs_value.",
+    "patterns": "Regexes searched (not anchored unless they say so) in net names and pin names. A net named /sheet/SDA is matched by its last path segment, SDA.",
+    "patterns.ground_net": "Net names that are ground. Power symbols are not components in the netlist, so ground is recognised by name only.",
+    "patterns.ground_pin": "Pin names that are ground. A power_in pin with one of these names is not a supply pin.",
+    "patterns.power_net": "Net names that are supply rails. A net also counts as a rail when a power_out pin or a non-ground power_in pin is on it.",
+    "patterns.addressable_led": "Matched against an LED's value, footprint and library part name. Selects the addressable LED parts.",
+    "patterns.led_data_in_pin": "Pin names of an addressable LED data input.",
+    "patterns.led_data_out_pin": "Pin names of an addressable LED data output. Used to find the first LED of a chain.",
+    "patterns.open_drain": "Net names and pin names that need a pull-up: I2C and reset. A bare RST is not matched; widen this pattern to include it for a board with a bare microcontroller.",
+    "patterns.vin_net": "Net names that bring power in from a connector. Also excluded from bulk_capacitance discovery, because a raw input is the connector rule's job (electronics.md section 6).",
+    "patterns.tvs_value": "Matched against a diode's value and library part name. Selects the transient suppressor diodes.",
+    "rules": "One object per rule. Every rule takes enabled, severity (error or warning) and waive.",
+    "rules.*.enabled": "false skips the rule and says so in the output.",
+    "rules.*.severity": "error makes the finding fail the gate (exit 1). warning is reported and exits 0.",
+    "rules.*.waive": "List of {\"match\": REGEX, \"reason\": TEXT}. A finding is waived when the regex matches any symbol reference or net name it names. The reason is required. A waived finding is listed, with its reason, and does not count. This is the rejection table of electronics.md section 6 in machine form: write a waiver where the design decided against the part, never to quiet a finding.",
+    "rules.decoupling_present": "Every power pin of an IC has a capacitor to ground on its net. A net-level check: it cannot see placement, and one capacitor on a rail satisfies every pin on that rail.",
+    "rules.decoupling_present.prefixes": "Reference prefixes of the parts whose power pins are checked.",
+    "rules.decoupling_present.led_prefixes": "Reference prefixes of LEDs. Only addressable LEDs (patterns.addressable_led) are checked, and only the pins named by led_power_pin_names.",
+    "rules.decoupling_present.led_power_pin_names": "Regex for an LED's supply pin names.",
+    "rules.decoupling_present.power_pin_types": "Pin electrical types that count as a power input.",
+    "rules.bulk_capacitance": "Each supply rail carries at least min_farads of capacitance to ground, summed over every capacitor from the rail to ground.",
+    "rules.bulk_capacitance.nets": "Explicit rail names. When non-empty it replaces discovery. A name absent from the netlist is a finding.",
+    "rules.bulk_capacitance.net_pattern": "Rails found by name when nets is empty.",
+    "rules.bulk_capacitance.include_power_out_nets": "Also check any net driven by a power_out pin.",
+    "rules.bulk_capacitance.include_power_in_nets": "Also check any net that feeds a non-ground power_in pin, except nets matching patterns.vin_net.",
+    "rules.bulk_capacitance.min_farads": "Minimum total capacitance in farads. A string with a unit is accepted: 4u7, 10uF.",
+    "rules.led_data_series_resistor": "The first addressable LED of a chain has a resistor between its data input and the driver. A resistor to ground or to a supply does not count.",
+    "rules.led_data_series_resistor.driver_prefixes": "Reference prefixes of the parts that may drive the data line. The far side of the resistor must reach a signal pin of one of them.",
+    "rules.open_drain_pullups": "Each net matching patterns.open_drain has a resistor to a supply rail with a value inside its class's window. A fixed window per class, not the UM10204 rise-time window, which needs the bus capacitance (references/domains.md 3.8).",
+    "rules.open_drain_pullups.classes": "{name: {match, min_ohms, max_ohms}}. A net takes the first class, in name order, whose match regex hits its name or a pin name on it. Defaults: i2c 1 k to 10 k, reset 4.7 k to 100 k. A project that changes one class restates the whole classes object.",
+    "rules.open_drain_pullups.min_ohms": "Lowest accepted pull-up value, in ohms, for a net no class matches.",
+    "rules.open_drain_pullups.max_ohms": "Highest accepted pull-up value, in ohms, for a net no class matches.",
+    "rules.connector_input_protection": "Each connector pin on a patterns.vin_net net has a fuse, a series inductor or bead, or a TVS diode on that net. A warning by default, because a module often carries the protection.",
+    "rules.connector_input_protection.connector_prefixes": "Reference prefixes of connectors.",
+    "rules.connector_input_protection.fuse_prefixes": "Reference prefixes of fuses.",
+    "rules.connector_input_protection.series_prefixes": "Reference prefixes of series inductors and beads.",
+    "rules.connector_input_protection.tvs_prefixes": "Reference prefixes of parts that may be a TVS, in addition to prefixes.diode. Matched with patterns.tvs_value."
+  },
+  "prefixes": {
+    "capacitor": "C[A-Z]*",
+    "resistor": "R",
+    "diode": "D"
+  },
+  "patterns": {
+    "ground_net": "^(GND|GNDA|GNDD|GNDPWR|AGND|DGND|PGND|VSS|VSSA|0V)$",
+    "ground_pin": "^(GND|GNDA|GNDD|AGND|DGND|PGND|VSS|VSSA|EP)$",
+    "power_net": "^(VCC|3V3|\\+3V3|\\+3\\.3V|VDD|VBUS|VBAT|\\+5V|5V|VIN|RAW)$",
+    "addressable_led": "SK6812|WS2812|WS2811|APA102|SK9822|NeoPixel",
+    "led_data_in_pin": "^(DIN|DI|DATA|SDI)$",
+    "led_data_out_pin": "^(DOUT|DO|SDO)$",
+    "open_drain": "(?i)^(SDA|SCL|I2C.*|nRESET|RESET|nRST)$",
+    "vin_net": "^(VBUS|VIN|BAT.*|VBAT|RAW|\\+5V)$",
+    "tvs_value": "TVS|ESD|PESD|PRTR|USBLC|SMAJ|SMBJ|SMF"
+  },
+  "rules": {
+    "decoupling_present": {
+      "enabled": true,
+      "severity": "error",
+      "waive": [],
+      "prefixes": ["U", "IC"],
+      "led_prefixes": ["D", "LED"],
+      "led_power_pin_names": "^(VDD|VCC)$",
+      "power_pin_types": ["power_in"]
+    },
+    "bulk_capacitance": {
+      "enabled": true,
+      "severity": "error",
+      "waive": [],
+      "nets": [],
+      "net_pattern": "^(VCC|3V3|\\+3V3|\\+3\\.3V|VDD|VBUS|VBAT|\\+5V|5V)$",
+      "include_power_out_nets": true,
+      "include_power_in_nets": true,
+      "min_farads": 1e-6
+    },
+    "led_data_series_resistor": {
+      "enabled": true,
+      "severity": "error",
+      "waive": [],
+      "driver_prefixes": ["U", "MCU", "IC", "J"]
+    },
+    "open_drain_pullups": {
+      "enabled": true,
+      "severity": "error",
+      "waive": [],
+      "min_ohms": 1000,
+      "max_ohms": 10000,
+      "classes": {
+        "i2c": {"match": "(?i)^(SDA|SCL|I2C.*)$", "min_ohms": 1000, "max_ohms": 10000},
+        "reset": {"match": "(?i)^(n?RESET|n?RST)$", "min_ohms": 4700, "max_ohms": 100000}
+      }
+    },
+    "connector_input_protection": {
+      "enabled": true,
+      "severity": "warning",
+      "waive": [],
+      "connector_prefixes": ["J", "USB"],
+      "fuse_prefixes": ["F"],
+      "series_prefixes": ["L", "FB"],
+      "tvs_prefixes": ["TVS"]
+    }
+  }
+}

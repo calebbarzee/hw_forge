@@ -35,7 +35,19 @@ knowledge harvest.
 
 ### Phase 5
 
+**`hw_review.py` exits 0 before any export.** This is phase 5a, the
+pre-order review: its entry contract is a gated board plus its fab profile,
+and it runs after phase 4 and before the fab export below (it exports into a
+scratch directory of its own), and again after phase 6 when there is an
+enclosure. It runs every check below, plus the schematic rules
+(`kicad_schrules.py`), the interface check, the fit contract, the case suite
+and the 3D assembly, and prints one readiness table. A FAIL in it is a stop,
+the same as a FAIL from any single script. Relay every SKIP and WARN row to
+the user as a property nobody proved.
+
 ```bash
+python3 scripts/hw_review.py PROJECT_DIR [--case CHECKS.py] [--fab PROFILE.json] \
+    [--assembly jlcpcb|none] [--rules sch-rules.json]   # the pre-order gate, first
 python3 scripts/kicad_gate.py PROJECT_DIR        # gate first: never export an ungated board
 python3 scripts/kicad_fpcheck.py PROJECT_DIR/BOARD.kicad_pcb --design PROJECT_DIR/design.py
 python3 scripts/kicad_bom.py audit PROJECT_DIR/PROJECT.kicad_sch \
@@ -269,8 +281,8 @@ emit the other's sections empty.
 
 ```
 REPORT
-Status:     commands run and their output verbatim: gate, then kicad_fpcheck.py,
-            then kicad_bom.py audit, then fab assertions
+Status:     commands run and their output verbatim: hw_review.py's table first,
+            then gate, kicad_fpcheck.py, kicad_bom.py audit, fab assertions
 Package check: kicad_fpcheck.py's verdict per footprint that was not a clean
             PASS, and whether design.py's PACKAGES table covered every
             mechanically critical part

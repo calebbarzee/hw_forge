@@ -7,22 +7,35 @@
 #   make <name>     regenerate one target
 #   make erc        the electrical rule check (ERC) only: the phase-3 gate,
 #                   which needs no board
-#   make check      validate only, no regeneration  <- the phase-4 gate
+#   make check      validate only, no regeneration: the DRC half of the phase 4
+#                   gate; `make review` is the whole gate
 #   make fpcheck    every footprint against its declared package (design.py
-#                   PACKAGES); a prerequisite of `fab`
+#                   PACKAGES)
 #   make silkcheck  silk readability: size/stroke floors, pad/text overlap,
-#                   reading orientation, refdes distance, required labels;
-#                   not a prerequisite of `fab`
-#   make bom        BOM field completeness and board-inherent exclusion; a
-#                   prerequisite of `fab`
+#                   reading orientation, refdes distance, required labels
+#   make schrules   schematic design rules ERC does not cover: decoupling, bulk
+#                   capacitance, LED data resistor, pull-ups, connector input
+#                   protection; a prerequisite of `erc`, and a row of `review`
+#   make bom        BOM field completeness and board-inherent exclusion
+#   make ifcheck    every connector against its interface standard (design.py
+#                   PARTS[ref].interface)
+#   make contract   the board-to-enclosure fit contract, fit-<board>.json; fails
+#                   when a connector declares no mating_direction or its mating
+#                   face does not point out of its edge
+#   make review     the pre-order gate: hw_review.py runs preflight, gate,
+#                   fpcheck, bom, schrules, silkcheck, ifcheck and the fit
+#                   contract, plus the case, fab-export and 3D rows, and prints
+#                   one readiness table; the only prerequisite of `fab`
 #   make warnings   every surviving finding, grouped by owner; rotates the
 #                   previous report aside and diffs the finding classes against
 #                   it (or against a BASELINE=, which also fails on a new one)
 #   make fab        gerbers + drill + pick-and-place + bill of materials (BOM)
-#                   + zip, per board (depends on `check`: never export an
-#                   ungated board)
+#                   + zip, per board (depends on `review`: never export a
+#                   board that has not passed the pre-order gate)
 #   make renders    3D renders and layer plots, for eyeballing
-#   make case       run the enclosure's numeric checks
+#   make case       run the enclosure's checks against each board's fit
+#                   contract (case-<board> depends on contract-<board>); with
+#                   no BOARDS configured, the checks run without a contract
 #   make determinism  prove a wipe-and-rebuild reproduces the same geometry
 #   make preflight  prove the toolchain works before designing anything
 #   make export-dsn / route-freerouting / import-ses / route-krt / adopt
@@ -37,8 +50,8 @@
 #
 #   * `make fab` plots the board exactly as `make check` gated it.  No zone
 #     refill on the way out, so the gerbers cannot differ from what the DRC
-#     saw.  `fab` also depends on `check`, so the documented ordering is not
-#     something anyone can forget.
+#     saw.  `fab` also depends on `review`, which runs `check` and every other
+#     gate, so the documented ordering is not something anyone can forget.
 #   * Nothing regenerates as a side effect of checking.  `make check` on a
 #     clean tree must be reproducible and read-only.
 #   * A target with no board yet is gated on ERC alone and says so
@@ -132,12 +145,16 @@ $(foreach t,$(TARGETS),$(eval $(t)_NAME ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_DIR  ?= $(t)))
 $(foreach t,$(TARGETS),$(eval $(t)_AT   := $(HERE)$(patsubst ./,,$($(t)_DIR)/)))
 
-.PHONY: all preflight install-tools erc check fpcheck silkcheck bom warnings fab renders case determinism clean \
+.PHONY: all preflight install-tools erc check fpcheck silkcheck schrules bom ifcheck contract review \
+        warnings fab renders case determinism clean \
         scrub introspect export-dsn route-freerouting route-krt import-ses adopt $(TARGETS) \
         $(addprefix erc-,$(TARGETS)) $(addprefix check-,$(TARGETS)) \
         $(addprefix fpcheck-,$(BOARDS)) $(addprefix silkcheck-,$(BOARDS)) $(addprefix bom-,$(BOARDS)) \
+        $(addprefix ifcheck-,$(BOARDS)) $(addprefix contract-,$(BOARDS)) $(addprefix review-,$(BOARDS)) \
+        $(addprefix schrules-,$(TARGETS)) \
         $(addprefix warnings-,$(TARGETS)) \
-        $(addprefix fab-,$(BOARDS)) $(addprefix renders-,$(BOARDS))
+        $(addprefix fab-,$(BOARDS)) $(addprefix renders-,$(BOARDS)) \
+        $(addprefix case-,$(BOARDS))
 
 all: $(TARGETS) check
 
@@ -177,13 +194,15 @@ $(foreach t,$(TARGETS),$(eval $(call GEN_RULE,$(t))))
 # `make check` fails the build rather than printing a warning nobody reads.
 #
 # `make erc` is the phase-3 gate: --sch-only asserts ERC and does not look for
-# a board.  `make check` gates everything; a target that genuinely has no board
-# yet is auto-detected and reports DRC as SKIPPED with a PARTIAL verdict.
+# a board.  `make check` gates ERC, DRC with parity and unconnected on every
+# target (the DRC half of the phase 4 gate; `make review` is the whole gate);
+# a target that genuinely has no board yet is auto-detected and reports DRC as
+# SKIPPED with a PARTIAL verdict.
 #
 # Read the JSON, not the summary line, when something fails: the violation
 # type and coordinates are what tell you which constant to nudge.
 
-erc: $(addprefix erc-,$(TARGETS))
+erc: $(addprefix erc-,$(TARGETS)) schrules
 check: $(addprefix check-,$(TARGETS))
 
 define CHECK_RULE
@@ -237,7 +256,7 @@ warnings-$(1):
 	     --baseline $$(HERE)drc-all-$(1).prev.json; \
 	 else \
 	   $$(PY) $$(SCRIPTS)/report.py $$(HERE)drc-all-$(1).json --by-owner; \
-	   echo "  (no previous report to diff — this run wrote the first baseline)"; \
+	   echo "  (no previous report to diff: this run wrote the first baseline)"; \
 	 fi
 endef
 $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
@@ -247,8 +266,8 @@ $(foreach t,$(TARGETS),$(eval $(call WARN_RULE,$(t))))
 # kicad_fpcheck.py: does each footprint's pad geometry match the package the
 # part is declared to be (design.py's PACKAGES table), not just whether the
 # board is internally self-consistent, which `check` already proves.  `fab`
-# depends on it the same way it depends on `check`: never export a board
-# whose footprints have not been checked against their declared packages.
+# runs it through `review`: never export a board whose footprints have not
+# been checked against their declared packages.
 # A footprint with no declared package is checked against its own name only
 # and counted in the summary as a self-consistency check.  See
 # scripts/kicad_fpcheck.py and docs/BACKLOG.md B3.
@@ -270,10 +289,8 @@ $(foreach b,$(BOARDS),$(eval $(call FPCHECK_RULE,$(b))))
 # own footprint, and required labels (--require / --require-file). Run after
 # DRC, not instead of it. See references/silkscreen.md.
 #
-# Deliberately NOT a prerequisite of `fab`: unlike fpcheck and bom, nothing in
-# the silkscreen reference requires gating fab exports on it. Run it
-# explicitly, or wire it into a project's own `fab` recipe if that project's
-# fab house demands it.
+# Since the pre-order review, silk readability gates `fab` through `review`
+# (hw_review.py's silkcheck row), like every other check here.
 
 silkcheck: $(addprefix silkcheck-,$(BOARDS))
 
@@ -283,6 +300,32 @@ silkcheck-$(1):
 endef
 $(foreach b,$(BOARDS),$(eval $(call SILKCHECK_RULE,$(b))))
 
+# ---------------------------------------------------------- schematic rules
+#
+# kicad_schrules.py: the design rules ERC does not cover.  Decoupling on every
+# IC power pin, bulk capacitance per rail, a series resistor on the first
+# addressable LED, pull-ups on I2C and reset nets, protection on connector
+# power inputs.  Connectivity only; placement distance is a board check.  It
+# needs a schematic and no board, so it runs for every target, the proto slice
+# included, and `erc` (the phase-3 gate) depends on it.  `fab` reaches it
+# through `review` (hw_review.py's schrules row).
+#
+# Defaults are templates/sch-rules.json.  A project that changes any key keeps
+# its own copy next to this Makefile as sch-rules.json; it is picked up here.
+# A decision not to fit a part is a `waive` entry with a reason in that file,
+# never a lowered severity.
+
+SCHRULES_FILE := $(wildcard $(HERE)sch-rules.json)
+
+schrules: $(addprefix schrules-,$(TARGETS))
+
+define SCHRULES_RULE
+schrules-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_schrules.py $$($(1)_AT)$$($(1)_NAME).kicad_sch \
+	  $$(if $$(SCHRULES_FILE),--rules $$(SCHRULES_FILE),)
+endef
+$(foreach t,$(TARGETS),$(eval $(call SCHRULES_RULE,$(t))))
+
 # -------------------------------------------------------------------- BOM
 #
 # kicad_bom.py audit: every sourced part carries the fields a buyer needs
@@ -290,7 +333,7 @@ $(foreach b,$(BOARDS),$(eval $(call SILKCHECK_RULE,$(b))))
 # assembly service is JLCPCB), and every board-inherent symbol (mounting
 # hole, fiducial, test point, logo) is excluded from the BOM.  The fields
 # live in design.py's PARTS table; the schematic emitter writes them.  `fab`
-# depends on it: a BOM with empty cells is not a fab output.
+# runs it through `review`: a BOM with empty cells is not a fab output.
 #
 #   make bom BOM_ASSEMBLY=jlcpcb      also require an LCSC number per part
 
@@ -305,6 +348,53 @@ bom-$(1):
 	  $$(if $$(BOM_ASSEMBLY),--assembly $$(BOM_ASSEMBLY),)
 endef
 $(foreach b,$(BOARDS),$(eval $(call BOM_RULE,$(b))))
+
+# ------------------------------------------------------- interfaces and fit
+#
+# kicad_ifcheck.py: every connector that declares an `interface` in design.py
+# PARTS is checked against its standard's definition (scripts/interfaces/,
+# kb/interfaces/), with the rule ids of references/interfaces.md.
+# kicad_geom.py --contract: the board-to-enclosure fit contract.  It fails
+# when a connector (a PARTS role/interface/mating_direction, a J/P/USB/CN/X
+# reference, or a Connector* library footprint) declares no mating_direction,
+# or when its mating face does not point out through a board edge within
+# edge_max_mm; the case suite reads it (case_verify.py --contract).
+
+ifcheck: $(addprefix ifcheck-,$(BOARDS))
+contract: $(addprefix contract-,$(BOARDS))
+
+define IF_RULE
+ifcheck-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_ifcheck.py $$($(1)_AT)$$($(1)_NAME).kicad_sch \
+	  --design $$(HERE)design.py --board $$($(1)_AT)$$($(1)_NAME).kicad_pcb
+contract-$(1):
+	@$$(PY) $$(SCRIPTS)/kicad_geom.py $$($(1)_AT)$$($(1)_NAME).kicad_pcb \
+	  --contract $$(HERE)fit-$(1).json --design $$(HERE)design.py
+endef
+$(foreach b,$(BOARDS),$(eval $(call IF_RULE,$(b))))
+
+# -------------------------------------------------------- pre-order review
+#
+# hw_review.py: preflight, gate, fpcheck, bom, schrules (kicad_schrules.py,
+# with SCHRULES_FILE when this project has one), silkcheck, ifcheck, the fit
+# contract, the case suite (when CASE_CHECKS exists), the fab export
+# assertions and the 3D assembly, in that order, as one table.  Exit 0 is the
+# pre-order gate (SKILL.md phase 5a, docs/QUALITY.md).  The individual targets
+# above stay for the nudge loop; `fab` depends on this one.
+
+review: $(addprefix review-,$(BOARDS))
+
+define REVIEW_RULE
+review-$(1):
+	@$$(PY) $$(SCRIPTS)/hw_review.py $$($(1)_AT) --name $$($(1)_NAME) \
+	  --design $$(HERE)design.py \
+	  $$(if $$(SCHRULES_FILE),--rules $$(SCHRULES_FILE),) \
+	  $$(if $$(wildcard $$(HERE)$$(CASE_CHECKS)),--case $$(HERE)$$(CASE_CHECKS),) \
+	  $$(if $$(wildcard $$(HERE)$$(CASE_PY)),--case-python $$(HERE)$$(CASE_PY),) \
+	  $$(if $$(wildcard $$($(1)_AT)fab-profile.json),--fab $$($(1)_AT)fab-profile.json,) \
+	  $$(if $$(BOM_ASSEMBLY),--assembly $$(BOM_ASSEMBLY),)
+endef
+$(foreach b,$(BOARDS),$(eval $(call REVIEW_RULE,$(b))))
 
 # ---------------------------------------------------------------- fab outputs
 #
@@ -327,10 +417,10 @@ $(foreach b,$(BOARDS),$(eval $(call BOM_RULE,$(b))))
 # Commit the zip and the BOM; ignore the loose intermediates (see the
 # .gitignore shipped alongside this template).
 
-fab: check $(addprefix fab-,$(BOARDS))
+fab: $(addprefix fab-,$(BOARDS))
 
 define FAB_RULE
-fab-$(1): check-$(1) fpcheck-$(1) bom-$(1)
+fab-$(1): review-$(1)
 	@$$(PY) $$(SCRIPTS)/kicad_fab.py $$($(1)_AT) -o $$(FABDIR)/$(1) \
 	  --name $$($(1)_NAME) \
 	  $$(if $$(wildcard $$($(1)_AT)fab-profile.json),--profile $$($(1)_AT)fab-profile.json,)
@@ -368,14 +458,31 @@ $(foreach b,$(BOARDS),$(eval $(call RENDER_RULE,$(b))))
 # The enclosure's gate.  The checks file must read its geometry out of the
 # board files (scripts/kicad_geom.py), never from a spec table alone, or the
 # case and the PCB will drift.  Run it with the python build123d lives in.
+#
+# case-<board> depends on contract-<board>, so the suite always reads the fit
+# contract the board just produced (fit-<board>.json, written by
+# contract-<board> above), never a stale one.  A project with no BOARDS (a
+# proto-only or case-only tree) has no contract, so `make case` then runs the
+# checks file alone.
 
+CASE_RUN = $(if $(wildcard $(HERE)$(CASE_PY)),$(HERE)$(CASE_PY),$(PY)) \
+  $(SCRIPTS)/case_verify.py $(HERE)$(CASE_CHECKS)
+
+ifeq ($(strip $(CASE_CHECKS)),)
 case:
-ifneq ($(strip $(CASE_CHECKS)),)
-	@$(if $(wildcard $(HERE)$(CASE_PY)),$(HERE)$(CASE_PY),$(PY)) \
-	  $(SCRIPTS)/case_verify.py $(HERE)$(CASE_CHECKS)
+	@echo "no CASE_CHECKS configured, skipping"
+else ifeq ($(strip $(BOARDS)),)
+case:
+	@$(CASE_RUN)
 else
-	@echo "no CASE_CHECKS configured — skipping"
+case: $(addprefix case-,$(BOARDS))
 endif
+
+define CASE_RULE
+case-$(1): contract-$(1)
+	@$$(CASE_RUN) --contract $$(HERE)fit-$(1).json
+endef
+$(foreach b,$(BOARDS),$(eval $(call CASE_RULE,$(b))))
 
 # ------------------------------------------------------------------ autorouting
 #

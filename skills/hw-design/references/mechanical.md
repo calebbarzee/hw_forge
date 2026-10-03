@@ -390,6 +390,14 @@ Geometry rules:
   notch where a lead has to leave.
 - Wall 2.0 to 2.5 mm for a hand-held enclosure. Thin a wall locally with a
   recessed panel when a control must be reachable (see §6), keeping ≥ 0.8 mm.
+- **The local wall floor is a check, not a reading.** `case_verify.py`'s
+  `v.min_wall(shell)` casts rays inward from every face and asserts the
+  thinnest wall against `MIN_WALL_MM`, 0.80 mm: two extrusion widths at a
+  0.4 mm nozzle, the same figure as the ligament rule in §4a. Raise it with
+  the nozzle; never lower it to pass. A deliberate thin feature, such as the
+  0.5 to 0.6 mm cap over a blind insert bore (§1), is an exempt region with
+  its reason. Measured case: a wall section thinned to 0.35 mm passed every
+  clearance check on one run (`docs/BACKLOG.md` B9).
 
 Tolerance defaults. Start here, then adjust one dimension at a time.
 
@@ -410,8 +418,8 @@ Tolerance defaults. Start here, then adjust one dimension at a time.
   enclosure.
 - **Print a test coupon before a full part:** one cutout and one post or insert.
   Name the single parameter to tune first, usually the press-fit cutout, and the
-  step size, usually ±0.05 mm. Better, put a *range* on one coupon — five sizes
-  in 0.10 mm steps, engraved — so one small print settles the number instead of
+  step size, usually ±0.05 mm. Better, put a *range* on one coupon (five sizes
+  in 0.10 mm steps, engraved), so one small print settles the number instead of
   a bisection over several prints.
 
 ### An FDM hole is not the hole you modelled
@@ -446,7 +454,7 @@ your stack-up.
 
 Before believing a physical measurement, check that every mating feature's
 clearance exceeds the mock's own process tolerance. If it does not, the mock
-cannot test that fit — open its features up, or wait for the real part.
+cannot test that fit: open its features up, or wait for the real part.
 
 Incident: a switch's Ø3.85 and Ø1.60 locating posts have 0.069 and 0.051 mm of
 clearance in a fabbed board. An FDM mock of that board could not accept them at
@@ -455,9 +463,9 @@ dimension that was in fact exact.
 
 ### Spec-equal mating dimensions have zero margin
 
-When a part's own dimension equals the spec gap your enclosure provides — a
+When a part's own dimension equals the spec gap your enclosure provides (a
 switch whose base-to-flange height equals the specified plate-to-board distance,
-say — the part is stopped by two faces at the same instant and there is nowhere
+say), the part is stopped by two faces at the same instant and there is nowhere
 to put a tolerance.
 
 Two obligations. Assert the equality numerically, so it cannot drift silently
@@ -531,7 +539,10 @@ on the board this came from. Moving the cell re-opens the bay derivation in
 
 **Open with a census, and for every connector state where its cable goes**, in
 board coordinates, after the placement transform. A connector's keepout is its
-cable, not its body.
+cable, not its body. The census is the fit contract (`kicad_geom.py --contract`):
+it carries each connector's mating wall, span and z band, read from
+`design.py`'s `mating_direction` and rotated by the placement, and
+`case_verify.py`'s `connector_openings` checks the case against it.
 
 The mating direction is in no machine-readable place. It is not in the
 footprint, where a name containing `Vertical` is a convention rather than data,
@@ -541,9 +552,10 @@ and where a footprint's own metadata can cite the wrong part outright (see
 tall thing.
 
 So it comes from the part's knowledge-base card, where `mating_direction` is a
-required field of the connector section (`kb/README.md`). Restate it in board
-axes, because the placement transform is what turns a footprint-local `+z` into
-"up, out of the front face".
+required field of the connector section (`kb/README.md`), and is written once
+into `design.py`'s `PARTS` table in footprint-local axes. `kicad_geom.py`
+applies the placement transform that turns a footprint-local `+z` into "up,
+out of the front face"; do not restate it by hand.
 
 Measured case: one vertical top-entry receptacle changing faces between
 revisions turned a one-line handoff note, that the lead points down into the bay

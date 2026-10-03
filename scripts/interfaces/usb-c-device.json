@@ -1,0 +1,50 @@
+{
+  "schema": "hw_forge.interface",
+  "version": 1,
+  "id": "usb-c-device",
+  "title": "USB Type-C receptacle, USB 2.0 device (sink) port, 16 or 24 contact",
+  "reference": "skills/hw-design/references/interfaces.md §1 (rules §1.7, cross-cutting §0.4)",
+  "sources": [
+    "USB Type-C Cable and Connector Specification, Release 1.0, chapter 4, Table 4-14 (Rd 5.1 kOhm), as cited in interfaces.md [S2]",
+    "GCT USB4105 drawing rev B4, pinout and shell, as cited in interfaces.md [S1]"
+  ],
+  "aliases": ["usb-c:device", "usb-c-16p:device", "usb-c-24p:device", "usb-c-sink"],
+  "roles": {
+    "VBUS":   {"pins": ["A4", "A9", "B4", "B9", "A4B9", "B4A9", "A9B4", "B9A4"], "names": ["VBUS"], "required": true},
+    "GND":    {"pins": ["A1", "A12", "B1", "B12", "A1B12", "B1A12", "A12B1", "B12A1"], "names": ["GND"], "required": true},
+    "CC1":    {"pins": ["A5"], "names": ["CC1"], "required": true},
+    "CC2":    {"pins": ["B5"], "names": ["CC2"], "required": true},
+    "DP":     {"pins": ["A6", "B6"], "names": ["D+", "DP1", "DP2"], "description": "Dp1 and Dp2"},
+    "DN":     {"pins": ["A7", "B7"], "names": ["D-", "DN1", "DN2"], "description": "Dn1 and Dn2"},
+    "SBU":    {"pins": ["A8", "B8"], "names": ["SBU1", "SBU2"], "allow_unconnected": true},
+    "SHIELD": {"pins": ["S1", "SH", "SHIELD"], "names": ["SHIELD"]}
+  },
+  "rules": [
+    {"id": "UC-ALL-01", "kind": "same_net", "roles": ["VBUS"], "text": "All VBUS pads share one net."},
+    {"id": "UC-ALL-01", "kind": "same_net", "roles": ["GND"], "text": "All GND pads share one net."},
+    {"id": "UC-ALL-01", "kind": "net_pattern", "roles": ["GND"], "pattern": "ground", "text": "The GND pads are on the board's ground net."},
+    {"id": "UC-ALL-01", "kind": "net_not_pattern", "roles": ["VBUS"], "pattern": "ground", "text": "VBUS is not ground: a swapped power pair."},
+    {"id": "UC-ALL-01", "kind": "distinct_nets", "roles": ["VBUS", "GND"], "text": "VBUS and GND are different nets."},
+    {"id": "UC-DEV-01", "kind": "distinct_nets", "roles": ["CC1", "CC2"], "text": "CC1 and CC2 are separate nets: one resistor each, not one shared."},
+    {"id": "UC-DEV-01", "kind": "passive_to", "roles": ["CC1", "CC2"], "to_role": "ground", "prefixes": ["R"], "value_ohms": 5100, "tolerance": 0.10, "count": 1, "text": "CC1 and CC2 each carry a 5.1 kOhm +/-10 % pulldown to GND (4.59 to 5.61 kOhm)."},
+    {"id": "UC-DEV-02", "kind": "no_passive_to", "roles": ["CC1", "CC2"], "to_role": "VBUS", "prefixes": ["R"], "text": "A device port shows no pullup from CC to VBUS."},
+    {"id": "UC-ALL-02", "kind": "same_net", "roles": ["DP", "DN"], "severity": "FAIL", "text": "On a 16-pin part Dp1 joins Dp2 and Dn1 joins Dn2."},
+    {"id": "UC-ALL-02", "kind": "distinct_nets", "roles": ["DP", "DN"], "text": "D+ and D- are different nets."},
+    {"id": "UC-ALL-03", "kind": "connected", "roles": ["SHIELD"], "text": "Every shield pad is tied to GND or a stated chassis network (X-SHD-01)."},
+    {"id": "UC-ALL-04", "kind": "part_on_net", "roles": ["VBUS", "DP", "DN", "CC1", "CC2"], "to_role": "ground", "prefixes": ["D", "TVS", "ESD"], "severity": "WARN", "text": "A TVS or ESD array covers VBUS, D+ and D-, CC1 and CC2, or the exemption is recorded in PARTS[ref].ifcheck_exempt (X-ESD-01)."}
+  ],
+  "mating": {
+    "id": "UC-ALL-05",
+    "direction_required": true,
+    "edge_required": true,
+    "internal_allowed": false,
+    "max_inset_mm": 0.5,
+    "max_overhang_mm": 0.5,
+    "overhang_severity": "WARN"
+  },
+  "notes": [
+    "UC-ALL-02's 5 mm stub length and UC-ALL-04's 5 mm TVS distance (X-ESD-02) are placement checks this definition does not make.",
+    "UC-ALL-06 (the case opening admits the 12.35 x 6.50 mm overmold plus 0.5 mm per side) is a case check: case_verify.py connector_openings with margin=0.5 and a mating_body sized to the overmold.",
+    "A USB-C receptacle that belongs to a module (a nice!nano) declares PARTS[ref].interface_wiring = \"module\": the netlist rules are reported SKIP and only the mating rules run."
+  ]
+}

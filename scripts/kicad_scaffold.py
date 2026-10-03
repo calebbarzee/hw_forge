@@ -9,6 +9,7 @@ here is KiCad's design rule check:
                                  a sibling `lib/` directory (or given by flag)
   NAME.kicad_pro                 design rules, one Default net class, and any
                                  DRC severity overrides
+  NAME.kicad_dru                 the baseline custom rules (see "Custom rules")
   hwforge-overrides.json         the durable record of those overrides
 
     python3 scripts/kicad_scaffold.py build/left boardname
@@ -60,6 +61,48 @@ Demote a rule only with a comment saying why the violation is intended.  A
 severity override is a design decision on the record, not a way to quiet a
 gate.
 
+Fab-relevant DRC checks are promoted too.  KiCad 10.0.5 ships 62 rule
+severities; on a real project 19 sit at `warning` and 5 at `ignore`, and the
+gate's `--severity-error` filters every one of them out.  `FAB_SEVERITIES`
+below promotes the ones that describe a board a fab cannot build or an
+assembler will build wrong, each with its reason; `LEFT_SEVERITIES` records
+the rest and why they stay.  Measured before choosing (2026-10-03, five gated
+boards: hexpad, z_board left/right/combo, mic_buffer): the promoted set fires
+only `hole_to_hole` x3 on mic_buffer, a real drill-web defect; promoting
+`missing_courtyard` to error would fire 6, 22, 22 and 117 times on community
+keyboard footprints, so it moves from `ignore` to `warning` instead.
+
+Custom rules.  `NAME.kicad_dru` starts from
+`templates/drc-baseline.kicad_dru`: fab floors KiCad's board defaults are
+looser than (PTH hole-to-hole, annular ring, via drill) and connector copper
+to edge.  The Makefile runs this script on every `make <target>`, so the rule
+file is managed like this:
+
+  * The baseline is written only when NAME.kicad_dru is absent.  An existing
+    file is never rewritten, so a project's edits to it (a tuned value, an
+    added rule) survive every regeneration.
+  * The fork rules live in one block between the lines
+    `# hw_forge fork rules begin` and `# hw_forge fork rules end`.  This
+    script edits only the lines between those markers, and the markers
+    themselves; every other line is left as it is.
+  * `--fork-rules` inserts the block (or refreshes its contents from the
+    template) when `preflight.fork_drc_probe()` says the kicad-cli in use is
+    the fork.  When the probe says stock, an existing block is removed, with
+    or without `--fork-rules`, and a WARNING says so.  When the probe cannot
+    run, the file is left as it is and a WARNING says so.
+  * `--reinstall-rules` overwrites the file with the baseline (plus the fork
+    block under the rule above): the deliberate way to discard local edits.
+
+The fork block holds constraints (decoupling_distance, current,
+via_under_smd, model_clearance, model_height, zone_islands, zone_min_channel,
+thermal_copper, connector_edge, reference_copper) only the forked kicad-cli
+compiles.  It is removed on a stock binary because stock kicad-cli 10.0.5 does
+not reject a rule file holding an unknown keyword: it drops the WHOLE file,
+silently, with exit 0, and every baseline rule in it stops running with it
+(measured: a bogus keyword took a firing hole_to_hole rule from 112 hits to
+0).  `preflight.py --project` fails a project whose rule file names a fork
+keyword when the kicad-cli in use is stock.
+
 Schematic parity is promoted by default; read this before demoting one.
 
 KiCad 10 ships every schematic-parity check at `warning`, and the pipeline's
@@ -83,6 +126,7 @@ import argparse
 import glob
 import json
 import os
+import sys
 
 OVERRIDES_FILE = "hwforge-overrides.json"
 
@@ -106,6 +150,72 @@ PARITY_SEVERITIES = {
     "footprint_symbol_mismatch": "error",   # pad set != pin set
     "lib_footprint_mismatch": "error",      # board copy != library original
 }
+
+# Fab-relevant checks KiCad 10.0.5 ships below error, promoted.  A board that
+# trips one of these is a board a fab rejects or an assembler builds wrong.
+FAB_SEVERITIES = {
+    "connection_width": "error",        # a copper neck under min_connection
+                                        # etches open; silent while that is 0
+    "copper_sliver": "error",           # a sliver under the fab floor lifts
+                                        # and shorts; fabs flag it at DFM
+    "duplicate_footprints": "error",    # two footprints, one ref: the BOM and
+                                        # placement file disagree with the board
+    "footprint_type_mismatch": "error",  # SMD/THT attr decides what the
+                                        # placement file lists
+    "hole_to_hole": "error",            # drill web under the fab minimum
+                                        # breaks bits (JLC 0.45 PTH)
+    "holes_co_located": "error",        # overlapping drills: a fab reject
+                                        # (kb/fabs/jlcpcb.md)
+    "mirrored_text_on_front_layer": "error",    # prints backwards
+    "nonmirrored_text_on_back_layer": "error",  # prints backwards
+    "padstack": "error",                # an invalid pad (hole past its copper)
+    "text_height": "error",             # under min_text_height the fab cannot
+                                        # print it legibly
+    "text_thickness": "error",          # same, for stroke width
+    "track_dangling": "error",          # a stub to nowhere: unfinished route
+                                        # or an antenna
+    "via_dangling": "error",            # a drill hit that connects nothing
+    "missing_courtyard": "warning",     # from ignore: a part with no courtyard
+                                        # is invisible to courtyards_overlap.
+                                        # Not error: 6/22/22/117 hits measured
+                                        # on proven community footprints; the
+                                        # fit contract uses body_bbox instead.
+}
+# Left where KiCad ships them, deliberately.  Not applied; this is the record.
+LEFT_SEVERITIES = {
+    "footprint_filters_mismatch": "ignore: generated designs pick footprints "
+                                  "in design.py; filters are a browsing aid",
+    "footprint_symbol_field_mismatch": "warning: the BOM is exported from the "
+                                       "schematic (kicad_bom.py), so a stale "
+                                       "board-side field is not what is ordered",
+    "isolated_copper": "warning: floating copper is not a fab defect; island "
+                       "removal is kicad_zonefill.py's, the check is BACKLOG B5",
+    "lib_footprint_issues": "warning: fires on library-table resolution, which "
+                            "differs per machine (measured on the fork probe "
+                            "board); preflight --project checks the tables",
+    "missing_tuning_profile": "warning: length tuning only; no generic board "
+                              "has a profile",
+    "silk_edge_clearance": "warning: the fab clips silk at the edge; "
+                           "kicad_silkcheck.py gates readability",
+    "silk_over_copper": "warning: the fab clips silk off pads; "
+                        "kicad_silkcheck.py gates text over pads",
+    "silk_overlap": "warning: readability, which kicad_silkcheck.py gates",
+    "track_not_centered_on_via": "ignore: connectivity still holds by "
+                                 "overlap, and the unconnected check catches a "
+                                 "real break",
+    "tuning_profile_track_geometries": "ignore: length tuning only",
+}
+
+TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "templates")
+BASELINE_RULES = os.path.join(TEMPLATES, "drc-baseline.kicad_dru")
+FORK_RULES = os.path.join(TEMPLATES, "drc-fork.kicad_dru")
+FORK_BEGIN = "# hw_forge fork rules begin"
+FORK_END = "# hw_forge fork rules end"
+# Written by earlier versions, which appended the fork rules from this line
+# to the end of the file; read so such a file can be refreshed or cleaned.
+LEGACY_FORK_MARKER = ("# --- hw_forge fork rules: "
+                      "templates/drc-fork.kicad_dru ---")
 
 DEFAULT_NET_CLASS = {
     "name": "Default",
@@ -254,7 +364,7 @@ def repatch(project_dir, name=None, quiet=True, severities=None, rules=None,
     overrides = load_overrides(project_dir)
     if not overrides:
         if not quiet:
-            print("no %s in %s — nothing to restore. If a generator's "
+            print("no %s in %s: nothing to restore. If a generator's "
                   "SaveBoard() ran,\n  the project file is now pcbnew's "
                   "defaults: scaffold it once with the full flag set."
                   % (OVERRIDES_FILE, project_dir))
@@ -324,12 +434,118 @@ def project_doc(name, rules, net_class, severities):
     }
 
 
+def split_fork_block(lines):
+    """(start, end) line indices of the fork block, end exclusive, or None.
+
+    The block runs from FORK_BEGIN to FORK_END inclusive.  A legacy file's
+    block runs from LEGACY_FORK_MARKER to the end of the file, which is how
+    earlier versions wrote it.  A begin marker with no end marker is an
+    error: guessing where the block stops could delete a user's own lines.
+    """
+    for i, line in enumerate(lines):
+        if line.strip() == FORK_BEGIN:
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip() == FORK_END:
+                    return i, j + 1
+            raise SystemExit("error: %r has no matching %r line; restore it "
+                             "or run with --reinstall-rules"
+                             % (FORK_BEGIN, FORK_END))
+        if line.strip() == LEGACY_FORK_MARKER:
+            return i, len(lines)
+    return None
+
+
+def fork_block_lines():
+    """The fork template between its markers, without its (version 1)."""
+    with open(FORK_RULES) as fh:
+        body = [l for l in fh.read().splitlines()
+                if l.strip() != "(version 1)"]
+    return [FORK_BEGIN] + body + [FORK_END]
+
+
+def _probe_fork():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import preflight
+    from _kicad_env import find_cli
+    cli, _how = find_cli()
+    return preflight.fork_drc_probe(cli)
+
+
+def install_rules(project_dir, name, fork=False, quiet=False,
+                  reinstall=False):
+    """Manage NAME.kicad_dru as the module docstring's "Custom rules" says.
+
+    Writes the baseline only when the file is absent or `reinstall` is set.
+    Otherwise edits only the fork block between FORK_BEGIN and FORK_END:
+    inserted or refreshed with `fork` on a fork binary, removed on a stock
+    one.  Returns the path when the file was written, else None.
+    """
+    path = os.path.join(project_dir, name + ".kicad_dru")
+    fresh = reinstall or not os.path.exists(path)
+    old = None                    # what is on disk; None when rewriting
+    if fresh:
+        with open(BASELINE_RULES) as fh:
+            text = fh.read()
+    else:
+        with open(path) as fh:
+            old = text = fh.read()
+    lines = text.splitlines()
+    span = split_fork_block(lines)
+    notes = []
+    if fork or span:
+        state, detail = _probe_fork()
+        if state == "fork" and fork:
+            block = fork_block_lines()
+            lines = (lines[:span[0]] + block + lines[span[1]:] if span
+                     else lines + block)
+            notes.append("fork block %s" % ("refreshed" if span
+                                             else "inserted"))
+        elif state == "stock" and span:
+            lines = lines[:span[0]] + lines[span[1]:]
+            notes.append("fork block removed")
+            print("  WARNING: removed the fork rules from %s: this kicad-cli "
+                  "is stock (%s), and a stock binary drops a rule file that "
+                  "names a fork keyword whole, silently"
+                  % (os.path.basename(path), detail))
+        elif state == "stock":
+            print("  WARNING: --fork-rules not installed in %s: this "
+                  "kicad-cli is stock (%s).  Set KICAD_CLI to the forked "
+                  "kicad-cli to install them" % (os.path.basename(path),
+                                                 detail))
+        elif state != "fork":
+            print("  WARNING: fork probe failed (%s); %s left as it is"
+                  % (detail, os.path.basename(path)))
+    text = "\n".join(lines) + "\n"
+    if text == old:
+        if not quiet:
+            print("  rules     kept %s (exists; --reinstall-rules overwrites "
+                  "it)" % os.path.basename(path))
+        return None
+    with open(path, "w") as fh:
+        fh.write(text)
+    if not quiet:
+        print("  rules     %s %s%s" % (
+            "reinstalled" if reinstall else "wrote" if fresh else "updated",
+            os.path.basename(path),
+            " (%s)" % ", ".join(notes) if notes else ""))
+    return path
+
+
 def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
-             sym_libs=None, fp_libs=None, quiet=False):
+             sym_libs=None, fp_libs=None, quiet=False, fork_rules=False,
+             custom_rules=True, reinstall_rules=False):
     os.makedirs(project_dir, exist_ok=True)
+    # Rules first: an unterminated fork block then stops before anything
+    # else is written.
+    if custom_rules:
+        install_rules(project_dir, name, fork=fork_rules, quiet=quiet,
+                      reinstall=reinstall_rules)
     # Parity promotions go first, so a project's own flags can still demote
     # one deliberately.  The override is the record of that decision.
-    merged_sev = dict(PARITY_SEVERITIES)
+    merged_sev = dict(FAB_SEVERITIES)
+    merged_sev.update(PARITY_SEVERITIES)
     merged_sev.update(severities or {})
     demoted = sorted(r for r, level in merged_sev.items()
                      if r in PARITY_SEVERITIES and level != "error")
@@ -379,7 +595,8 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
                       % (rule, level,
                          "   (hw_forge parity default)"
                          if rule in PARITY_SEVERITIES and level == "error"
-                         else ""))
+                         else "   (hw_forge fab default)"
+                         if FAB_SEVERITIES.get(rule) == level else ""))
             print("  remember: re-run with --repatch after pcbnew.SaveBoard()")
         if demoted:
             # Loud, because it un-gates the check most likely to catch a
@@ -414,6 +631,18 @@ def main():
                     help="symbol library row (default: discover ../lib)")
     ap.add_argument("--fp-lib", action="append", metavar="NAME=URI",
                     help="footprint library row (default: discover ../lib)")
+    ap.add_argument("--fork-rules", action="store_true",
+                    help="insert templates/drc-fork.kicad_dru as a marked "
+                         "block in NAME.kicad_dru when the kicad-cli in use "
+                         "evaluates the fork constraints "
+                         "(preflight.fork_drc_probe); a stock binary gets "
+                         "the block removed instead")
+    ap.add_argument("--reinstall-rules", action="store_true",
+                    help="overwrite NAME.kicad_dru with the baseline, "
+                         "discarding local edits (default: an existing file "
+                         "is kept, and only its fork block is managed)")
+    ap.add_argument("--no-rules", action="store_true",
+                    help="do not write NAME.kicad_dru")
     args = ap.parse_args()
 
     net_class = parse_pairs(args.net_class)
@@ -452,7 +681,9 @@ def main():
              rules=parse_pairs(args.design_rule, numeric=True),
              net_class=net_class,
              sym_libs=list(parse_pairs(args.sym_lib).items()) or None,
-             fp_libs=list(parse_pairs(args.fp_lib).items()) or None)
+             fp_libs=list(parse_pairs(args.fp_lib).items()) or None,
+             fork_rules=args.fork_rules, custom_rules=not args.no_rules,
+             reinstall_rules=args.reinstall_rules)
 
 
 if __name__ == "__main__":

@@ -111,6 +111,11 @@ the footprint (a name containing `Vertical` is a convention, not data), not in
 `pads_bbox` or `fab_items`, and `kicad_geom` reports `protrudes: ["top"]` for a
 connector whose cable is the tall thing.
 
+The card is where the fact is established; `design.py`'s `PARTS` table is where
+a project states it, as `mating_direction` per connector, so
+`kicad_geom.py --contract` and `kicad_ifcheck.py` can check placement against it
+(`templates/design.py`, `docs/QUALITY.md`).
+
 Yet a whole chain of case consequence hangs on it: one vertical top-entry receptacle
 changing board faces between revisions turned a one-line note ("the lead points down into
 the bay") into a ~40 mm routed channel and a locally thickened wall (`mechanical.md` §6a).
@@ -259,7 +264,10 @@ re-add the moment the display moves back.
 kb/
 ├── README.md                  this file
 ├── fabs/                      per-fab capability floors and their KiCad DRC encodings
+├── interfaces/                per connector family: stock footprints, mating_direction, plug envelope, panel opening
 ├── keyboards/                 the keyboard domain (parts, firmware, geometry, libraries)
+├── parts/                     package-family traps that are not tied to one domain
+├── runs/                      harvested outside runs and measured tool runs, one card each
 └── projects/                  per-project pointer cards: what it is, gate state, where its docs live
 ```
 

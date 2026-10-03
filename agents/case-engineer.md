@@ -44,20 +44,37 @@ outside diameter.
 
 ## Where geometry comes from
 
-Out of the board files, not the spec table.
+Out of the board files, through the fit contract, never retyped.
 
 ```bash
-python3 scripts/kicad_geom.py BOARD.kicad_pcb --json
+python3 scripts/kicad_geom.py BOARD.kicad_pcb --contract FIT.json --design design.py
+python3 scripts/kicad_geom.py BOARD.kicad_pcb --json      # the full per-footprint record
 ```
 
-That gives the outline, hole positions, and footprint positions as built. A spec
-table records what the board was supposed to be, and by phase 6 it is routinely
-stale in two or three places. When they disagree, the board wins, and you say so
-in your report.
+The contract carries the outline polygon and cutouts, the mounting holes, and
+per part its plan envelope, one body box per STEP model, its z band, and for
+every connector and user-facing part the wall its mating face points through
+and the opening the case must provide. Its schema is in `kicad_geom.py`'s
+docstring. Read every number from it: a number copied out of the contract
+into a parameter block is the number that drifts. When a number the case
+needs is not in the contract (a part height with no declaration and no STEP
+model), the fix is a `height_mm` in `design.py`'s `PARTS`, handed back to the
+board phase, not a constant in your generator.
+
+A spec table records what the board was supposed to be, and by phase 6 it is
+routinely stale in two or three places. When they disagree, the board wins,
+and you say so in your report.
 
 ## Gates you must meet
 
-`case_verify.py CHECKS.py`, with every check passing.
+`case_verify.py CHECKS.py --contract FIT.json`, with every check passing.
+
+The suite calls the five contract-driven checks on the real shells, with the
+generator's one frame helper as `frame` (`case_verify.py` docstring):
+`board_in_cavity`, `cavity_clearance`, `connector_openings`, `min_wall`, and
+`fastener_stackup`. Each exemption carries its reason in the call, and the
+reason prints as its own line. `hw_review.py` runs this suite in the
+pre-order table, with the contract it just built.
 
 **Run it with the Python the CAD library lives in.** The suite must assert valid
 solids, and that nothing stands proud of the print reference face. Neither is
@@ -244,12 +261,13 @@ Name the method in the report line, so the rejection is reproducible.
   seats, and pass the screw through its own clearance hole.
 - Tolerances are parameters. Document the one the user will tune first, such as
   a press-fit cutout or a lid gap, with a tuning step size.
-- **State the thinnest wall you produced, as a number, and hold it above the
-  printability floor in `references/mechanical.md`.** A wall section thinned
-  to 0.35 mm to meet a recess target passed every numeric check on z_board
-  (2026-09-20), because nothing asserts a local minimum. Until
-  `case_verify.py` grows that check (`docs/BACKLOG.md` B9), measure it and
-  report it.
+- **Assert the thinnest wall with `v.min_wall(shell)` on every shell.** A wall
+  section thinned to 0.35 mm to meet a recess target passed every numeric
+  check on z_board (2026-09-20), because nothing asserted a local minimum
+  (`docs/BACKLOG.md` B9). The floor is `MIN_WALL_MM`, 0.80 mm, from
+  `references/mechanical.md` §5. A deliberate thinner feature, such as the
+  0.6 mm cap over a blind insert bore, is an exempt region with its reason,
+  never a lowered floor. Report the number the check printed.
 - **Prefer the printable variant as the default.** A modelled alternative that
   cannot be FDM-printed without support is fine to ship as an option, but say
   which is the default and why.
@@ -277,19 +295,21 @@ Then stop. Grinding and silent deviation are both violations.
 
 ```
 REPORT
-Status:     case_verify.py output verbatim — every check, pass or fail — and the
+Status:     case_verify.py output verbatim (every check, pass or fail) and the
             interpreter it ran under
-Retired:    required on any re-fit or revision — every check in the baseline that
+Retired:    required on any re-fit or revision: every check in the baseline that
             no longer exists, one line each, with the geometric reason the case no
             longer needs it. "None" if the set only grew. A retirement without a
             reason is a failed report, not a passed suite
 Changed:    files touched, what changed in each
-Numbers:    outer dimensions, cavity depth, wall and floor, computed screw
-            length, volume and estimated filament per part
+Numbers:    outer dimensions, cavity depth, wall and floor, the thinnest wall
+            min_wall measured per shell, computed screw length, volume and
+            estimated filament per part
+Exempt:     every exemption passed to a contract-driven check, with its reason
 Geometry:   what you read out of the board files, and every place the spec table
             disagreed
 Decisions:  anything not locked that you decided, and why
-Rejected:   what you modelled and dropped, with the reason — and, where the
+Rejected:   what you modelled and dropped, with the reason, and, where the
             reason is geometric, the ASSERTION that holds it rejected
             (`v.interferes(...)`), named, so it cannot be quietly un-rejected
 For the next agent / the user:

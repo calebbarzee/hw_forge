@@ -211,7 +211,8 @@ PACKAGES = {
 # assembled onto a bare board; a hole is neither.  Measured failure this
 # table exists to prevent: exporting a real project's BOM listed its four
 # mounting holes as line items to source, right alongside its capacitors and
-# switches (`.tmp/hexpad_bom_probe.csv`, read 2026-09-20).
+# switches (hexpad, 2026-09-20).  `kicad_bom.py audit` now fails that case as
+# rule BOARD_INHERENT_IN_BOM.
 #
 # Six kinds are declared board-inherent, and none of them is ever a sourced
 # part:
@@ -332,6 +333,66 @@ BOARD_INHERENT = {
 #   distributors  optional dict of other distributor part numbers, keyed by
 #                 distributor name, e.g. {"digikey": "...", "mouser": "..."}.
 #
+# Fit and interface fields.  Required on every connector and every
+# user-facing part (a button, a switch, a display, an LED seen through the
+# case, a knob); optional elsewhere.  The board file carries none of them, and
+# without them nothing can check that a plug reaches its socket or that the
+# board fits its case with the real part heights.  Read by
+# `scripts/kicad_geom.py --contract`, `scripts/kicad_ifcheck.py` and
+# `scripts/case_verify.py`; the method is in docs/QUALITY.md.
+#
+#   mating_direction  "+x" "-x" "+y" "-y" "+z" "-z", in the FOOTPRINT-LOCAL
+#                 axes of the library footprint as drawn: x right, y down
+#                 (KiCad footprints are y-south), z out of the face the part
+#                 mounts on.  It names the outward normal of the mating face:
+#                 the way a plug is pulled out, the way the cable leaves, the
+#                 side a user reaches from.  `kb/README.md` requires it on
+#                 every connector card and `kb/interfaces/` lists it for stock
+#                 footprints.  The placement rotation and a back-face flip are
+#                 applied by kicad_geom.py; never pre-rotate it here.
+#   height_mm     body height above the mounting face, mm, from the datasheet.
+#                 Without it the height comes from the part's STEP model, and
+#                 the contract says which source it used.
+#   z_band        [lo, hi] above the mounting face, instead of height_mm, for
+#                 a part that also reaches below it (a reverse-mount LED
+#                 [-0.84, 0.79]; a socket hanging under its footprint).
+#   interface     the standard a connector follows, as kicad_ifcheck.py names
+#                 it: "usb-c-device", "jst-ph-2:battery", "header-2.54:swd".
+#                 `scripts/interfaces/` and `kb/interfaces/` hold the
+#                 definitions; references/interfaces.md argues them.
+#   pin_map       optional {role: [pin, ...]} for a connector whose pins the
+#                 standard does not fix, e.g. a battery pigtail's polarity:
+#                 {"POS": ["2"], "NEG": ["1"]}.
+#   interface_wiring  "module" when the connector is part of a module (a
+#                 nice!nano's USB-C): only its mating rules are checked.
+#   access        "internal" for a connector that mates inside the enclosure
+#                 (a battery lead); default "external", which needs an edge
+#                 and an opening.
+#   edge_max_mm   how far inboard of its edge the mating face may sit
+#                 (default 1.0 mm in kicad_geom.py; an interface definition
+#                 may set its own).
+#   mating_body   optional [x0, y0, x1, y1], footprint-local: the part of the
+#                 body an opening is for (a slide switch's knob), with
+#                 optional mating_z [lo, hi].
+#   ifcheck_exempt  optional {rule_id: reason} for an interface rule this
+#                 design deliberately does not meet; printed with the reason.
+#
+# The emitters write mating_direction, height_mm, interface and access onto
+# the footprint as properties of exactly those names as well.  The forked
+# kicad-cli's `connector_edge` DRC does not read that property yet: its
+# current baseline binary reads a board-frame field `Mating_Direction` with
+# values N, S, E, W.  The fork's owner is changing it to read the footprint
+# property `mating_direction` with +x -x +y -y +z -z in footprint axes (their
+# workstream C, not yet landed).  Once that lands, the board and the fit
+# contract read one source.  Until then hw_forge's own fit contract
+# (kicad_geom.py --contract) is the check that sees the mating end.
+#
+# A part is a connector to the fit contract when this table gives it a role,
+# an interface or a mating_direction, or its reference prefix is J, P, USB,
+# CN or X, or its footprint library starts with Connector.  Every such part
+# needs mating_direction, or the contract fails ("undeclared
+# mating_direction").
+#
 # The schematic emitter writes every field present here into the schematic
 # symbol as a property of the same, capitalised name: Description,
 # Manufacturer, MPN, Package, Datasheet, LCSC.  Exactly the same mechanism
@@ -354,6 +415,12 @@ PARTS = {
     #     "datasheet": "<manufacturer datasheet URL>",
     #     "lcsc": "<LCSC part number>",
     #     "distributors": {"digikey": "<part number>"},
+    # },
+    # "<connector ref>": {               # e.g. "J1", a USB-C receptacle
+    #     ...the sourcing fields above...,
+    #     "interface": "usb-c-device",
+    #     "mating_direction": "+y",      # GCT USB4105: kb/interfaces/
+    #     "height_mm": 3.31,             # datasheet body height
     # },
 }
 

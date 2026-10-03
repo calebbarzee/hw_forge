@@ -198,6 +198,15 @@ every other file agrees with the wrong footprint (`kb/runs/`). So
 the design declares in `design.py`, with a cited table of nominal dimensions in
 `scripts/packages.json`, and `make fab` depends on it.
 
+Fit and connection follow the same reasoning. `kicad_geom.py --contract`
+writes the board-to-enclosure fit contract and fails a connector whose mating
+face points inboard, `kicad_ifcheck.py` checks each declared connector against
+its standard (a USB-C device port's CC pulldowns, a battery connector's
+polarity), and `case_verify.py` checks the case against the contract.
+`hw_review.py` runs every check as one pre-order table, and `make fab` depends
+on it. [`docs/QUALITY.md`](docs/QUALITY.md) lists the property each check
+proves.
+
 Routing follows the same split. Regular repeated cells such as a key matrix are
 routed by the generator as named constants. Irregular placement with many nets
 routes the critical nets by script, locks them, hands the rest to an external

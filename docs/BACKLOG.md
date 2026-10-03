@@ -8,8 +8,8 @@ Each item names the gap numbers it covers in `hexpad/GAPS.md`, why it is
 deferred rather than done, and what would have to be true to close it.
 
 The criterion that put these here rather than into a harvest: a fix must be
-verifiable in the same pass that writes it. Six of the nine below need a
-mechanism the pipeline does not yet have (B1, B2, B5, B7, B8, B9). One needs a packaging
+verifiable in the same pass that writes it. Five of the ten below need a
+mechanism the pipeline does not yet have (B1, B2, B5, B7, B10). One needs a packaging
 decision (B4), and one needs a cross-project convention before it can safely
 write into someone's source (B6). Writing a doc line about any of them would
 have produced a rule with nothing behind it; a recorded gap at least states what
@@ -18,7 +18,9 @@ is missing.
 B3 moved out of that group: the mechanism it was blocked on now ships
 (`scripts/kicad_fpcheck.py`, `scripts/packages.json`), so it stays in this
 file only for the part of the original gap the mechanism does not cover. See
-B3 below for exactly which part that is.
+B3 below for exactly which part that is. B8 and B9 moved out the same way
+(2026-10-03): the fit contract and `case_verify.py`'s `min_wall` ship, and
+each entry now states only its remainder.
 
 B5 and B6 are the deferred halves of gaps whose doctrine did land. That
 distinction is worth preserving: the rule that stops the bug recurring is
@@ -34,8 +36,9 @@ as fixed in `hexpad/GAPS.md` and as open here.
 | **B5** | `kicad_pourcheck.py`: island count and narrowest channel per zone | the parser decision: extend the s-expression reader to zones, tracks, vias and nets, or accept a `pcbnew`-only tool |
 | **B6** | Writing adopted placements back into a generator | a settled convention for where adopted placements live (a single `ADOPTED = {...}` in `design.py`) |
 | **B7** | Acid-trap and vias-under-parts checks on autorouted copper | a geometry check with no mechanism today: acid traps need an angle and proximity check on trace joints; vias under parts need z-aware clearance, and `kicad_geom.py` has no z data |
-| **B8** | Connector mating face against the board edge | a per-connector `mating_direction` the board file does not carry; the kb card format requires it, `kicad_geom.py` does not read it |
-| **B9** | Local wall-thickness floor in `case_verify.py` | a minimum-thickness sweep over the shell solid, which needs build123d geometry queries the check runner does not expose yet |
+| **B8** | Connector mating face against the board edge | *(mechanism shipped)*; open remainder: a connector with no declaration, no J/P/USB/CN/X prefix and no `Connector*` library is not seen; the footprint-local axis per stock footprint is verified for one USB-C part so far; the fork's `connector_edge` reads another field until its workstream C lands |
+| **B9** | Local wall-thickness floor in `case_verify.py` | *(mechanism shipped)*; open remainder: ray sampling about `spacing` (2 mm) apart, capped at 64 samples per face axis, can miss a thin region smaller than its grid |
+| **B10** | Courtyard gap around tall parts | an emitter that writes KiCad's component class `TALL` from `design.py` `height_mm`; without it a rule on that class never fires |
 
 ---
 
@@ -168,19 +171,21 @@ this same workstream investigated (`kb/keyboards/diode-footprint-vs-part.md`).
 The evidence source that closed it is not the one this entry originally
 proposed. Rather than a `kb/` library of pad geometry confirmed on a fabbed
 board (which only accumulates coverage for parts a project has already built),
-`packages.json` ships nominal geometry for ~26 common packages up front, each
+`packages.json` shipped nominal geometry for 26 common packages up front, each
 number cited to a JEDEC/IPC designator, a manufacturer datasheet, or KiCad's
-own stock footprint library. That covers the failure class both measured
+own stock footprint library. It now holds 71 entries, 45 of them connector
+families (43 of kind `connector`, 2 of kind `offboard`). That covers the failure class both measured
 incidents share, a common chip, diode, or IC package family, at zero prior
 building.
 
 **What is still open, precisely.**
 
 - **The MSK12C02 case itself is still uncovered.** `packages.json` has no
-  slide-switch or connector families; it covers chip passives, diodes, SOT/
-  SOIC/TSSOP/MSOP/QFN/DFN/TO-252. Closing the measured case needs an entry
-  added to `packages.json` for that family (the format is documented in the
-  file's own `_read_me` field), which is now cheap but is not done.
+  slide-switch family. Its 71 entries cover chip passives, diodes, SOT/SOIC/
+  TSSOP/MSOP/QFN/DFN/TO-252 and 45 connector families. Closing the measured
+  case needs an entry added to `packages.json` for that family (the format is
+  documented in the file's own `_read_me` field), which is now cheap but is
+  not done.
 - **The check needs a declared package to check against.** `design.py`'s
   `PACKAGES` table is opt-in; an unfilled one means every footprint checks
   only against its own name, which `kicad_fpcheck.py` reports honestly
@@ -198,7 +203,8 @@ building.
   scope for a design-time pipeline.
 
 **To close the remainder:** add package families as they come up (slide
-switches, connectors, module sockets) rather than trying to front-load every
+switches, module sockets, connector families not yet listed) rather than
+trying to front-load every
 package that exists; each addition costs one `packages.json` entry with a
 citation, following the file's existing shape.
 
@@ -350,48 +356,115 @@ look, not a gate.
 ## B8: Connector mating face against the board edge
 
 **Covers:** a z_board finding reported 2026-09-20, not a `hexpad/GAPS.md` gap.
+**Mechanism shipped 2026-10-03; part of the original gap remains open.**
 
 A USB-C receptacle was placed with its pad end at Edge.Cuts and its mating
 face pointing inboard. DRC, courtyard checks, and the enclosure's numeric
 checks were all clean, because none of them knows which way a connector
 mates. The cable could not be plugged in.
 
-**Why deferred.** The board file carries a footprint's position and rotation,
-not its mating direction. `kb/README.md` already requires `mating_direction`
-on every connector card, in footprint-local axes, and that is the missing
-input: with it, the check is one rotation and one comparison against the
-nearest board edge. Without a machine-readable place for it that
-`kicad_geom.py` can read, the assertion has nothing to test.
+**What closed.** `design.py`'s `PARTS` table now carries `mating_direction`
+in footprint-local axes (`templates/design.py`), and a footprint property of
+the same name fills it when `PARTS` does not. `kicad_geom.py --contract`
+rotates it into board axes, mirrors it for a back-face part, casts it
+against the outline polygon, and exits 1 when the edge the face points
+through does not face the same way or lies further than `edge_max_mm`. It
+also exits 1 for any connector with no `mating_direction`: a part is a
+connector when `PARTS` gives it a role, an interface or a mating direction,
+when its reference prefix is J, P, USB, CN or X, or when its footprint
+library starts with `Connector`. `hw_review.py`'s fit row is SKIP on a board
+with no connector, never PASS. `kicad_ifcheck.py` applies the interface's own
+limit (`UC-ALL-05`: 0.5 mm for USB-C). The case side is `case_verify.py`'s
+`connector_openings`: a probe from the part's face out through its wall must
+meet no plastic, so an opening cut in the wrong wall fails, and a connector
+with no mating record fails.
 
-**To close:** put `mating_direction` in `design.py`'s part table for every
-connector (the same table B6 and the BOM contract are settling), have
-`kicad_geom.py --json` rotate it into board axes, and add a phase-4 check
-that every edge connector's mating face points outboard through the nearest
-edge within a stated distance. Until then the pcb-engineer's per-wall opening
-census states the mating direction in words for every connector, and the
-orchestrator reads it.
+The forked kicad-cli's `connector_edge` DRC does not read the same source yet.
+Its current baseline binary reads a board-frame field `Mating_Direction` with
+values N, S, E, W. The fork's owner is changing it to read the footprint
+property `mating_direction` with +x -x +y -y +z -z in footprint axes (their
+workstream C, not yet landed). Once that lands, one footprint field serves
+both checks. Until then the fit contract is the check that sees the mating
+end.
+
+Verified 2026-10-03 (`kb/runs/quality-gates-2026-10-03.md`) on scratch copies
+of hexpad and mic_buffer and on a synthetic board: the verification covers
+the outboard, inboard, mid-board, `edge_max_mm`, top and bottom face,
+malformed-value and undeclared-connector cases, and the case-side opening on
+the right and the wrong wall. It does not cover a non-rectangular outline
+beyond one notch, or a connector on a curved edge.
+
+**What is still open, precisely.**
+
+- **It sees what is declared or named.** A connector with no `PARTS`
+  declaration, a reference prefix outside J, P, USB, CN and X, and a
+  footprint library not named `Connector*` (a module's USB port, a switch
+  used as a connector) is not recognised. The phase-1 resolution step has to
+  declare it.
+- **The fork's `connector_edge`** reads `Mating_Direction` (N/S/E/W, board
+  frame) until the fork's workstream C lands, so the two checks can disagree
+  on a part whose fields are set for only one of them.
+- **The footprint-local axis per stock footprint** is verified for the GCT
+  USB4105 (`kb/interfaces/usb-c-receptacle.md`, from the footprint's own
+  `PCB Edge` line) and inferred for others. Each further family needs one
+  source, recorded in its card.
+- **Part geometry is boxes**: the opening probe is the face body's plan box
+  times its z band, so a connector whose plug envelope is larger than its
+  body needs `mating_body` set to the envelope.
 
 ---
 
 ## B9: Local wall-thickness floor in `case_verify.py`
 
 **Covers:** a z_board finding reported 2026-09-20, not a `hexpad/GAPS.md` gap.
+**Mechanism shipped 2026-10-03; part of the original gap remains open.**
 
 A case agent thinned one wall section to 0.35 mm to satisfy a recess target.
 Every numeric check passed, because the checks assert clearances and
-positions, and nothing asserts a floor on the thinnest local wall.
+positions, and nothing asserted a floor on the thinnest local wall.
 
-**Why deferred.** A local minimum-thickness sweep needs geometry queries over
-the shell solid (a ray or offset test across the whole surface), which
-`case_verify.py`'s registration framework does not expose. It is not a
-one-line assertion.
+**What closed.** `Suite.min_wall(solid, floor_mm=0.80)` samples every face of
+a build123d solid on a grid inside its trimmed boundary, casts a ray inward
+along the face normal, and asserts the shortest distance to where the ray
+leaves the material. The floor is two extrusion widths at a 0.4 mm nozzle
+(`references/mechanical.md` §5). Deliberate thin features are exempted by
+region with the reason printed. Each face axis gets its own sample count
+from that axis's extent, so neighbouring samples sit about `spacing` mm apart
+(default 2.0), capped at 64 per axis. Verified 2026-10-03
+(`kb/runs/quality-gates-2026-10-03.md`): a synthetic shell with a wall section
+at 0.35 mm fails at "thinnest wall = 0.350mm" on both shells, and a 0.2 mm
+slot floor is found at the default spacing and at 0.5 mm.
 
-**To close:** add a `min_wall(shell, floor_mm)` check to the framework that
-offsets the shell inward by half the floor and asserts the result is still a
-single non-empty solid, or samples the surface and measures thickness along
-the normal. Set the floor from the printability rules in
-`references/mechanical.md` (nozzle diameter times a stated multiple). Until
-then the case-engineer's report must state the thinnest wall it produced.
+**What is still open, precisely.** A thin region narrower than the sample
+spacing can fall between samples, and so can one on a face longer than
+64 x `spacing` (128 mm at the default), where the cap stretches the grid. A
+ray that grazes a fillet can read short. Lower `spacing` near a feature that
+must be proven. An inward offset of the whole solid (the other method this
+entry once proposed) would close the gap, and OCCT offsets of real shells are
+fragile enough that sampling shipped first.
+
+`case_verify.py`'s `cavity_clearance` in numeric mode (no shells) treats a
+`floor_z` or `ceiling_z` left as None as infinite clearance on that side, and
+says "not checked" for it; with both None the z test does not run. Numeric
+mode tests the case's own numbers, so it stays weaker than the solid mode.
+
+---
+
+## B10: Courtyard gap around tall parts
+
+**Covers:** a review finding on `templates/drc-baseline.kicad_dru`,
+2026-10-03, not a `hexpad/GAPS.md` gap.
+
+The baseline rule file shipped a `tall_part_courtyard` rule, a 0.5 mm
+courtyard gap conditioned on `A.hasComponentClass('TALL')`. No emitter writes
+that component class, so the rule matched nothing and never fired, while the
+file's comment said it was in force. It was removed rather than left as a
+rule that reads as a check.
+
+**To close:** the schematic emitter writes the symbol field `Component Class`
+= `TALL` for any part whose `design.py` `height_mm` is at or above a
+project-stated threshold, a fixture board proves the rule fires on such a
+part, and the rule returns to the baseline.
 
 ---
 

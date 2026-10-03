@@ -1,0 +1,37 @@
+{
+  "schema": "hw_forge.interface",
+  "version": 1,
+  "id": "header-2.54-swd",
+  "title": "Serial Wire Debug (SWD) on a 2.54 mm single-row pin header, 4 or 5 pins",
+  "reference": "skills/hw-design/references/interfaces.md §9 (rules H25-02 to H25-06) and §10 (H12-03 for the nRESET pull-up)",
+  "sources": [
+    "No standard fixes the pin order of a 2.54 mm SWD header (interfaces.md §9.3). Roles match by symbol pin name; a generic Conn_01x0n symbol names its pins Pin_1..Pin_n, so state the order in PARTS[ref].pin_map."
+  ],
+  "aliases": ["header-2.54:swd", "swd-2.54", "pinheader-2.54:swd"],
+  "roles": {
+    "SWDIO": {"names": ["SWDIO", "SWDIO/TMS", "TMS"], "required": true, "description": "bidirectional debug data"},
+    "SWCLK": {"names": ["SWCLK", "SWCLK/TCK", "TCK"], "required": true, "description": "debug clock"},
+    "GND": {"names": ["GND", "VSS"], "required": true, "description": "return"},
+    "VTref": {"names": ["VTREF", "VTref", "VREF", "3V3", "VCC", "VDD"], "required": true, "description": "target rail the probe senses its logic level from"},
+    "nRESET": {"names": ["NRESET", "nRESET", "RESET", "NRST", "RST"], "required": false, "description": "optional target reset"}
+  },
+  "rules": [
+    {"id": "H25-05", "kind": "connected", "roles": ["SWDIO", "SWCLK", "GND", "VTref"], "text": "SWDIO, SWCLK, GND and VTref are each wired to another part."},
+    {"id": "H25-05", "kind": "distinct_nets", "roles": ["SWDIO", "SWCLK", "GND", "VTref"], "text": "The four required SWD pins are on four different nets."},
+    {"id": "H25-05", "kind": "net_pattern", "roles": ["GND"], "pattern": "ground", "text": "The GND pin carries the board's ground net."},
+    {"id": "H25-05", "kind": "net_not_pattern", "roles": ["VTref"], "pattern": "ground", "text": "VTref is a rail, not ground."},
+    {"id": "H25-06", "kind": "part_on_net", "roles": ["nRESET"], "to_role": "VTref", "prefixes": ["R"], "severity": "WARN", "text": "When nRESET is brought out, it has a pull-up to the target rail, or the MCU's own pull-up is documented (H12-03: 10 to 100 kohm)."},
+    {"id": "H25-02", "kind": "manual", "roles": ["SWDIO"], "text": "The header's pins are named on the silkscreen from the header's own side."},
+    {"id": "H25-03", "kind": "manual", "roles": ["GND"], "text": "A header carrying a supply and a signal has a reversed-plug mitigation: GND on both ends, a shroud, or a documented risk."}
+  ],
+  "mating": {
+    "id": "H25-04",
+    "direction_required": true,
+    "edge_required": false,
+    "internal_allowed": true
+  },
+  "notes": [
+    "A vertical 2.54 mm header mates +z, a right-angle one +x (interfaces.md §9.2); declare it as PARTS[ref].mating_direction.",
+    "H25-01 (pitch, pin count, style) is kicad_fpcheck.py with a PinHeader-1x0<n>-2.54 PACKAGES entry, not this checker."
+  ]
+}

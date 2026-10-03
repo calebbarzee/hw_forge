@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "hw_forge.interface",
+  "title": "hw_forge interface definition",
+  "description": "One standardized connector interface, as kicad_ifcheck.py checks it. A definition lives in scripts/interfaces/<id>.json, or as a fenced ```json block inside kb/interfaces/<card>.md whose object carries \"schema\": \"hw_forge.interface\". Rule ids are transcribed from skills/hw-design/references/interfaces.md, which is the human-readable source; this file is the machine-readable form of those tables. Version 1: add keys, never rename or re-mean one.",
+  "type": "object",
+  "required": ["schema", "version", "id", "title", "reference", "roles", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "hw_forge.interface"},
+    "version": {"const": 1},
+    "id": {
+      "type": "string",
+      "description": "The value design.py's PARTS[ref].interface names, e.g. usb-c-device. Lowercase; a role after a colon (jst-ph-2:battery) is part of an alias, not of a base id.",
+      "pattern": "^[a-z0-9][a-z0-9.+_-]*(:[a-z0-9.+_-]+)?$"
+    },
+    "title": {"type": "string"},
+    "reference": {"type": "string", "description": "Where the rules are argued, with section, e.g. references/interfaces.md §1."},
+    "sources": {"type": "array", "items": {"type": "string"}, "description": "Standards and datasheets the numbers come from, as cited in the reference."},
+    "aliases": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Other interface strings this definition answers, e.g. jst-ph-2:battery. An exact id match always wins over an alias."
+    },
+    "ground_pattern": {
+      "type": "string",
+      "description": "Regex (Python re, matched case-insensitively against the net name with any leading '/' removed) that identifies a ground net. Default: ^(gnd|vss|0v|agnd|dgnd|pgnd|gnd_.*|.*_gnd)$"
+    },
+    "roles": {
+      "type": "object",
+      "description": "Role name -> how a connector pin is recognised as that role. A pin matches by pad number or by symbol pin name (the netlist's pinfunction). design.py PARTS[ref].pin_map {role: [pins]} replaces `pins` for one part, which is how a pigtail's vendor-specific polarity is stated.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pins": {"type": "array", "items": {"type": "string"}},
+          "names": {"type": "array", "items": {"type": "string"}},
+          "required": {"type": "boolean", "description": "The part must have at least one pin in this role, and that pin must be on a net with another node."},
+          "allow_unconnected": {"type": "boolean"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "description": "Rule id from the reference's table, e.g. UC-DEV-01."},
+          "kind": {
+            "enum": ["connected", "same_net", "distinct_nets", "net_pattern", "net_not_pattern",
+                     "passive_to", "no_passive_to", "part_on_net", "manual"],
+            "description": "connected: every pin of `roles` sits on a net with another node. same_net: all pins of each role in `roles` share one net. distinct_nets: the roles in `roles` are on pairwise different nets. net_pattern / net_not_pattern: the role's net does / does not match `pattern` (\"ground\" means ground_pattern). passive_to: for each role in `roles`, exactly `count` parts whose ref prefix is in `prefixes` have one pin on the role's net and another on `to_role`'s net (or a ground net when to_role is \"ground\"), with value inside value_ohms/value_farads x (1 +/- tolerance). no_passive_to: no such part exists. part_on_net: at least one such part exists for each role, any value. manual: a review step with no script; reported as MANUAL, never PASS."
+          },
+          "roles": {"type": "array", "items": {"type": "string"}},
+          "to_role": {"type": "string"},
+          "prefixes": {"type": "array", "items": {"type": "string"}},
+          "value_ohms": {"type": "number"},
+          "value_farads": {"type": "number"},
+          "tolerance": {"type": "number", "minimum": 0},
+          "count": {"type": "integer", "minimum": 1},
+          "pattern": {"type": "string"},
+          "severity": {"enum": ["FAIL", "WARN"], "default": "FAIL"},
+          "text": {"type": "string", "description": "The rule sentence from the reference table."}
+        }
+      }
+    },
+    "mating": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Placement rules checked against the fit contract (kicad_geom.py --contract) when kicad_ifcheck.py is given --board.",
+      "properties": {
+        "id": {"type": "string"},
+        "direction_required": {"type": "boolean", "description": "PARTS[ref].mating_direction (or the footprint field of that name) must be declared."},
+        "edge_required": {"type": "boolean", "description": "The mating face must point out through a board edge (contract mating.kind == edge, verdict PASS), unless PARTS[ref].access is internal and internal_allowed is true."},
+        "internal_allowed": {"type": "boolean"},
+        "max_inset_mm": {"type": "number", "description": "Largest distance the mating face may sit inboard of its edge."},
+        "max_overhang_mm": {"type": "number", "description": "Largest distance the body may overhang the edge before the overhang is reported."},
+        "overhang_severity": {"enum": ["FAIL", "WARN"]}
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}

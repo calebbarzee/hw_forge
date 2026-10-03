@@ -83,7 +83,7 @@ class Report(object):
         n_fail, n_warn = len(self.failed), len(self.warned)
         total = len(self.rows)
         if n_fail:
-            print("%d of %d checks FAILED%s — fix the lines above before "
+            print("%d of %d checks FAILED%s: fix the lines above before "
                   "starting design work"
                   % (n_fail, total, ", %d warning(s)" % n_warn if n_warn else ""))
         elif n_warn:
@@ -122,7 +122,7 @@ def check_toolchain(rep):
                          "install and set KICAD_ROOT to it")
             elif tup and tup < MIN_KICAD:
                 rep.fail("kicad-cli", detail,
-                         "fix: upgrade to KiCad 10 — KiCad 8's headless zone "
+                         "fix: upgrade to KiCad 10; KiCad 8's headless zone "
                          "filler aborts without a display")
             elif tup and tup[:2] != KNOWN_GOOD_KICAD:
                 rep.warn("kicad-cli", detail,
@@ -180,7 +180,7 @@ def check_pcbnew_api(rep, kpy):
         # top-bottom mirror plus 180 degrees. Every back-side footprint came
         # out rotated 180, pads swapped ends, and a clean board reported 295
         # violations. Always pass FLIP_DIRECTION_TOP_BOTTOM explicitly.
-        rep.ok("Flip() enum", "FLIP_DIRECTION_TOP_BOTTOM present — pass it "
+        rep.ok("Flip() enum", "FLIP_DIRECTION_TOP_BOTTOM present: pass it "
                               "explicitly, never False")
     else:
         rep.warn("Flip() enum", "FLIP_DIRECTION_TOP_BOTTOM missing "
@@ -194,7 +194,7 @@ def check_pcbnew_api(rep, kpy):
         rep.fail("ZONE_FILLER", "pcbnew has no ZONE_FILLER",
                  "fix: upgrade to KiCad 10")
     if got.get("island_area"):
-        rep.ok("island removal", "ISLAND_REMOVAL_MODE_AREA available — use it "
+        rep.ok("island removal", "ISLAND_REMOVAL_MODE_AREA available: use it "
                                  "for via-fed zones")
     else:
         rep.warn("island removal", "ISLAND_REMOVAL_MODE_AREA missing",
@@ -269,6 +269,126 @@ def check_router(rep):
                  router_fix + "\n" + kicad_route.jar_install_hint())
 
 
+# ------------------------------------------------- fork DRC capability probe
+
+# DRC constraints that only the forked kicad-cli compiles.  A rule file naming
+# any of them must never reach a stock binary: stock 10.0.5 does not refuse
+# such a file, it drops the WHOLE file without a message and exits 0, so every
+# stock rule in it stops running too (measured 2026-10-03: a file holding a
+# track_width rule and a connector_edge rule gave 150 track_width hits on the
+# fork and 0 on stock).  The fork exits 3 with "DRC incomplete: could not
+# compile custom design rules." on a keyword it does not know.
+FORK_KEYWORDS = ("decoupling_distance", "current", "via_under_smd",
+                 "model_clearance", "model_height", "zone_islands",
+                 "zone_min_channel", "thermal_copper", "connector_edge",
+                 "reference_copper")
+_FORK_KEYWORD = re.compile(r"\(\s*constraint\s+(%s)\b" % "|".join(FORK_KEYWORDS))
+
+# The probe board: a 30 x 30 mm outline and one footprint J1 whose 5 x 5 mm
+# courtyard sits 3 mm from the west edge, so a connector_edge (max 0.5mm)
+# rule must fire on any binary that evaluates it.
+_PROBE_PCB = """(kicad_pcb
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(general (thickness 1.6))
+	(paper "A4")
+	(layers
+		(0 "F.Cu" signal)
+		(2 "B.Cu" signal)
+		(25 "Edge.Cuts" user)
+		(31 "F.CrtYd" user "F.Courtyard")
+		(29 "B.CrtYd" user "B.Courtyard")
+	)
+	(setup (pad_to_mask_clearance 0))
+	(net 0 "")
+	(footprint "probe:J"
+		(layer "F.Cu")
+		(uuid "11111111-1111-1111-1111-111111111111")
+		(at 5.5 15)
+		(property "Reference" "J1" (at 0 -4 0) (layer "F.Cu") (uuid "11111111-1111-1111-1111-111111111112") (hide yes) (effects (font (size 1 1) (thickness 0.15))))
+		(property "Value" "probe" (at 0 4 0) (layer "F.Cu") (uuid "11111111-1111-1111-1111-111111111113") (hide yes) (effects (font (size 1 1) (thickness 0.15))))
+		(fp_poly (pts (xy -2.5 -2.5) (xy 2.5 -2.5) (xy 2.5 2.5) (xy -2.5 2.5))
+			(stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "11111111-1111-1111-1111-111111111114"))
+	)
+	(gr_rect (start 0 0) (end 30 30) (stroke (width 0.05) (type default)) (fill no) (layer "Edge.Cuts") (uuid "22222222-2222-2222-2222-222222222222"))
+)
+"""
+_PROBE_DRU = """(version 1)
+(rule "probe_connector_edge"
+	(constraint connector_edge (max 0.5mm))
+	(condition "A.Reference == 'J1'"))
+"""
+
+
+def fork_drc_probe(cli):
+    """("fork" | "stock" | "error", detail): does `cli` evaluate fork rules?
+
+    Decided by the JSON report holding a violation of type connector_edge,
+    never by stdout or the exit code: on a fork keyword stock prints nothing
+    and exits 0.  A lib_footprint_issues finding also appears on both
+    binaries, in a number that depends on the machine's library tables, so
+    the count is not a signal either.
+    """
+    if not cli:
+        return "error", "no kicad-cli"
+    tmp = tempfile.mkdtemp(prefix="hwforge_forkprobe_")
+    try:
+        for name, text in (("probe.kicad_pcb", _PROBE_PCB),
+                           ("probe.kicad_dru", _PROBE_DRU),
+                           ("probe.kicad_pro", '{ "meta": { "filename": '
+                                               '"probe.kicad_pro", '
+                                               '"version": 3 } }\n')):
+            with open(os.path.join(tmp, name), "w") as fh:
+                fh.write(text)
+        out = os.path.join(tmp, "probe.json")
+        proc = run([cli, "pcb", "drc", "--severity-all", "--format", "json",
+                    "-o", out, os.path.join(tmp, "probe.kicad_pcb")])
+        if not os.path.exists(out):
+            return "error", ((proc.stderr or proc.stdout or "").strip()
+                             .splitlines() or ["no report"])[-1]
+        with open(out) as fh:
+            report = json.load(fh)
+        hit = [v for v in report.get("violations") or []
+               if v.get("type") == "connector_edge"]
+        if hit:
+            return "fork", hit[0].get("description", "connector_edge fired")
+        return "stock", "no connector_edge violation in the probe report"
+    except (OSError, ValueError) as exc:
+        return "error", str(exc)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def fork_keywords_in(path):
+    """The fork-only constraint keywords a rule file names."""
+    try:
+        with open(path, errors="replace") as fh:
+            text = "\n".join(l for l in fh.read().splitlines()
+                             if not l.lstrip().startswith("#"))
+    except OSError:
+        return []
+    return sorted(set(_FORK_KEYWORD.findall(text)))
+
+
+def check_fork_drc(rep, cli):
+    """Non-fatal: can this kicad-cli run templates/drc-fork.kicad_dru?"""
+    state, detail = fork_drc_probe(cli)
+    if state == "fork":
+        rep.ok("fork DRC rules", "this kicad-cli evaluates them (%s); "
+               "kicad_scaffold.py --fork-rules may install "
+               "templates/drc-fork.kicad_dru" % detail)
+    elif state == "stock":
+        rep.warn("fork DRC rules", "this kicad-cli does not evaluate the "
+                 "fork constraints (%s); the baseline rules apply" % detail,
+                 "note: never install drc-fork.kicad_dru for this binary. "
+                 "Stock kicad-cli drops a\n     rule file holding one "
+                 "unknown keyword WHOLE, silently, exit 0: every stock\n"
+                 "     rule in the file would stop running with it.")
+    else:
+        rep.warn("fork DRC rules", "probe did not run: %s" % detail, "")
+
+
 # --------------------------------------------------------------- project
 
 def check_project(rep, project_dir, cli):
@@ -308,9 +428,38 @@ def check_project(rep, project_dir, cli):
         check_lib_tables(rep, directory, name)
 
     check_models(rep, project_dir, kicad_dirs)
+    check_rule_files(rep, kicad_dirs, cli)
     check_generators(rep, project_dir)
     check_case_env(rep, project_dir)
     return kicad_dirs
+
+
+def check_rule_files(rep, kicad_dirs, cli):
+    """A project rule file naming fork keywords, on a stock kicad-cli, is a
+    FAIL: that binary drops the whole file, stock rules included, and the
+    gate then passes on rules it never ran."""
+    risky = []
+    for directory, name in kicad_dirs or ():
+        path = os.path.join(directory, name + ".kicad_dru")
+        found = fork_keywords_in(path)
+        if found:
+            risky.append((path, found))
+    if not risky:
+        return
+    state, detail = fork_drc_probe(cli)
+    for path, found in risky:
+        label = "rules %s" % os.path.basename(path)
+        if state == "fork":
+            rep.ok(label, "fork keywords %s, and this kicad-cli evaluates "
+                   "them" % ", ".join(found))
+        else:
+            rep.fail(label, "names fork-only keywords (%s) and this kicad-cli "
+                     "does not evaluate them (%s): it drops the WHOLE file, "
+                     "stock rules included" % (", ".join(found), detail),
+                     "fix: run DRC with the forked kicad-cli (KICAD_CLI=...), "
+                     "or remove the fork block\n     from the rule file "
+                     "(kicad_scaffold.py DIR NAME removes it on a stock "
+                     "kicad-cli)")
 
 
 def check_lib_tables(rep, directory, name):
@@ -456,7 +605,7 @@ def check_models(rep, project_dir, kicad_dirs=None):
                     + (" ..." if len(missing) > 3 else "")),
                  "fix: vendor the model, or correct the (model ...) path in "
                  "the footprint.\n     A footprint naming a model is not "
-                 "evidence that the model exists —\n     the evidence is a "
+                 "evidence that the model exists;\n     the evidence is a "
                  "stat of the resolved path, which is this check.")
     elif links:
         rep.ok(label, "%d model link(s) in %d footprint(s) resolve"
@@ -468,7 +617,7 @@ def check_models(rep, project_dir, kicad_dirs=None):
                     + (" ..." if len(no_link) > 6 else "")),
                  "fix: only a defect if this project requires a model per "
                  "footprint (a case\n     phase does). A STAND-IN must be "
-                 "STEP, not WRL — see references/mechanical.md §7.")
+                 "STEP, not WRL; see references/mechanical.md §7.")
 
 
 def check_generators(rep, project_dir):
@@ -639,7 +788,7 @@ def smoke(rep, project_dir, kicad_dirs, cli, kpy):
             rep.fail("smoke round-trip",
                      detail[-1] if detail else "zonefill failed",
                      "fix: this is a pcbnew/toolchain failure, not a design "
-                     "error — do not start design work until it passes")
+                     "error: do not start design work until it passes")
             return
 
         after = os.path.join(scratch, "after.json")
@@ -659,7 +808,7 @@ def smoke(rep, project_dir, kicad_dirs, cli, kpy):
         if any(v > 0 for v in deltas.values()):
             rep.fail("smoke test", "%s regressed after a pcbnew round-trip "
                                    "(%s)" % (name, summary),
-                     "fix: TOOLCHAIN REGRESSION — a board that was clean came "
+                     "fix: TOOLCHAIN REGRESSION: a board that was clean came "
                      "back dirty.\n"
                      "     Do not debug the design. Check the KiCad version "
                      "against the\n"
@@ -701,6 +850,7 @@ def main():
     cli, kpy = check_toolchain(rep)
     check_self(rep)
     check_router(rep)
+    check_fork_drc(rep, cli)
 
     kicad_dirs = None
     if args.project:

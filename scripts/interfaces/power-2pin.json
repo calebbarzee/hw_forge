@@ -1,0 +1,39 @@
+{
+  "schema": "hw_forge.interface",
+  "version": 1,
+  "id": "power-2pin",
+  "title": "Generic 2-pin power or battery connector (wire-to-board header, pigtail pads)",
+  "reference": "skills/hw-design/references/interfaces.md §4 (JST PH rules PH-02, PH-04, PH-05) and §0.4; references/batteries.md §5 for pigtail polarity",
+  "sources": [
+    "No standard assigns a signal to either pin: polarity is the pigtail vendor's, per interfaces.md §4.3. The default pin 1 = positive below is a convention, not a standard; state the real one in PARTS[ref].pin_map."
+  ],
+  "aliases": [
+    "jst-ph-2:battery", "jst-ph-2:power",
+    "jst-xh-2:battery", "jst-xh-2:power",
+    "jst-gh-2:battery", "jst-gh-2:power",
+    "jst-sh-2:power",
+    "molex-picoezmate-2:battery", "molex-picoezmate-2:power",
+    "header-2.54-2:power", "pads-2:power", "pads-2:battery"
+  ],
+  "roles": {
+    "POS": {"pins": ["1"], "required": true, "description": "positive supply or cell terminal"},
+    "NEG": {"pins": ["2"], "required": true, "description": "return, the board's ground"}
+  },
+  "rules": [
+    {"id": "P2-01", "kind": "connected", "roles": ["POS", "NEG"], "text": "Both pins are wired."},
+    {"id": "P2-02", "kind": "distinct_nets", "roles": ["POS", "NEG"], "text": "The two pins are not shorted together."},
+    {"id": "PH-02", "kind": "net_pattern", "roles": ["NEG"], "pattern": "ground", "text": "The return pin carries the board's ground net: the polarity design.py states (pin_map) is the polarity the board is wired for."},
+    {"id": "PH-02", "kind": "net_not_pattern", "roles": ["POS"], "pattern": "ground", "text": "The positive pin is not ground: a reversed pigtail or a swapped pin map."},
+    {"id": "PH-05", "kind": "manual", "roles": ["POS"], "text": "A battery connector has a keyed, polarized shroud and a documented pigtail check, or a reverse-polarity element; record the choice (electronics.md §6)."}
+  ],
+  "mating": {
+    "id": "PH-04",
+    "direction_required": true,
+    "edge_required": false,
+    "internal_allowed": true
+  },
+  "notes": [
+    "PH-01 (pitch and family) is kicad_fpcheck.py with a JST-PH-<n> PACKAGES entry, not this checker.",
+    "PH-03 (at most 2 A per pin) needs the power budget, which no netlist carries."
+  ]
+}

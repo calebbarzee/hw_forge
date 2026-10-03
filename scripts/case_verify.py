@@ -7,6 +7,7 @@ failure tells you which named constant to nudge and by how much.
 
     python3 scripts/case_verify.py case/checks.py
     python3 scripts/case_verify.py case/checks.py --suite left --json
+    python3 scripts/case_verify.py case/checks.py --contract build/fit.json
 
 Run this with the python your computer-aided design (CAD) library lives in.
 This module is pure stdlib, so it runs under any interpreter.  But a real
@@ -118,6 +119,55 @@ why.
 
 The check count is never a target.  Re-derive it; do not force the previous
 number.
+
+Contract-driven checks
+----------------------
+Five checks read the board's fit contract (`kicad_geom.py BOARD --contract
+FIT.json --design design.py`) instead of numbers a case file retyped:
+
+    fit = v.contract("build/fit.json")      # or --contract FIT.json, below
+    v.board_in_cavity(fit, shells=[top, bottom], frame=to_case)
+    v.cavity_clearance(fit, shells=[top, bottom], frame=to_case,
+                       exempt={"SW1": "plate-mounted switch, see §plate"})
+    v.connector_openings(fit, shells=[top, bottom], frame=to_case)
+    v.min_wall(top, name="top shell")
+    v.fastener_stackup("M2 screw", screw_len=14, floor_thk=2.6,
+                       counterbore=2.1, cavity=8.0, bore_depth=4.4,
+                       contract=fit)
+
+`frame(x, y, z) -> (X, Y, Z)` maps the contract's board frame (x east, y
+south, z up, z = 0 on the top face) into the case model's frame: the one
+named helper `references/mechanical.md` §7 item 4 asks for.  With `shells`
+and `frame` the checks build boxes and probes in build123d and intersect them
+with the real shells.  Without them, three of the checks take numbers in
+board coordinates instead (`cavity=v.rect(...)`, `floor_z=`, `ceiling_z=`,
+`openings={...}`), which is weaker, because those numbers are the case's own.
+
+  board_in_cavity     the outline polygon, grown by `margin`, meets no
+                      plastic in the board's own z slab (mounting holes and
+                      cutouts excepted).
+  cavity_clearance    every part's plan obstacle and z band, grown by
+                      `margin`, meets no plastic.  A part is a box here: plan
+                      bbox times z band.  A part whose plan changes with
+                      height (an encoder shaft through a deck) is coarser than
+                      a box can say; exempt it with the reason, and the
+                      exemption is itself a recorded line.
+  connector_openings  for every external mating face in the contract, a probe
+                      from the part's leading face out through its wall, as
+                      wide as its body plus `margin`, meets no plastic and ends
+                      outside the case.  An opening on the wrong wall fails,
+                      because the probe then runs into the right one.  A
+                      connector with no mating record fails: an opening that
+                      was never declared cannot be checked.
+  min_wall            the thinnest local wall of one solid, by casting a ray
+                      inward from sample points on every face, holds a floor
+                      (MIN_WALL_MM, references/mechanical.md §5).  Samples sit
+                      about `spacing` mm apart, capped at 64 per face axis.
+  fastener_stackup    references/mechanical.md §2 as one assertion, with the
+                      board thickness read from the contract.
+
+A missing build123d is one failing check carrying its fix, never thirty
+missing ones, and the module still imports without it.
 """
 
 import argparse
@@ -144,6 +194,37 @@ sys.dont_write_bytecode = True
 # tolerance and removes the whole class of false failure.
 # Pass `tol=0` on a check that must be exact to the bit.
 TOL = 1e-6
+
+# Contract-driven check defaults, each with its source.
+FIT_MARGIN = 0.30      # mechanical.md §5 tolerance table: board-to-cavity
+                       # clearance per side, and the component keepout
+MIN_WALL_MM = 0.80     # mechanical.md §4a/§5: two extrusion widths at a
+                       # 0.4 mm nozzle, the ligament and recessed-panel floor
+PROBE_REACH = 15.0     # how far past a wall an opening probe runs; more than
+                       # any wall mechanical.md §5 recommends (2.0 to 2.5 mm)
+ENGAGEMENT_MIN = 2.5   # mechanical.md §2: M2-class band floor into an insert
+SHOULDER_MIN = 0.45    # mechanical.md §2: floor left under a screw head
+CORNER_RELIEF = 1.00   # mechanical.md §5: a cavity fillet of about 1.0 mm
+                       # meets a square board corner, so the side margin
+                       # starts this far from each outline vertex
+CONTACT_VOLUME = 1e-3  # mm^3 of overlap below which two solids only touch
+
+
+def load_contract(source):
+    """A fit contract from a path, an already-loaded dict, or None."""
+    if source is None or isinstance(source, dict):
+        return source
+    with open(source) as fh:
+        return json.load(fh)
+
+
+def _b3d():
+    """The build123d module, or None.  Imported lazily: see the docstring."""
+    try:
+        import build123d
+        return build123d
+    except Exception:                                  # pragma: no cover
+        return None
 
 
 # ------------------------------------------------------------------- shapes
@@ -224,6 +305,7 @@ class Suite(object):
         self.loud = loud
         self.only = only
         self.results = []            # (suite, section, ok, message, name)
+        self.contract_path = None    # set by --contract; read by contract()
         self._section = ""
         self._suite = name
         self._skipping = bool(only) and bool(name) and name != only
@@ -423,6 +505,512 @@ class Suite(object):
                              "matches (%d values)" % len(got) if ok
                              else "MISMATCH want %s got %s" % (want, got)))
 
+    # -- contract-driven checks (see the module docstring) -----------------
+
+    def contract(self, source=None):
+        """Load a fit contract: a path, a dict, or `--contract` when None.
+
+        Records one check that the file is a fit contract of a version this
+        module reads, so a stale or foreign JSON fails here, by name.
+        """
+        source = source if source is not None else self.contract_path
+        if source is None:
+            self.check(False, "fit contract: none given (pass a path, or run "
+                              "case_verify.py --contract FIT.json)",
+                       name="fit contract loads")
+            return None
+        fit = load_contract(source)
+        ok = (fit.get("schema") == "hw_forge.fit_contract"
+              and fit.get("version") == 1)
+        self.check(ok, "fit contract %s: schema %s v%s"
+                   % (source if not isinstance(source, dict) else "(dict)",
+                      fit.get("schema"), fit.get("version")),
+                   name="fit contract loads")
+        return fit if ok else None
+
+    def _need_b3d(self):
+        """build123d, or None after recording one failing check with the fix."""
+        b3d = _b3d()
+        if b3d is None and not getattr(self, "_b3d_reported", False):
+            self._b3d_reported = True
+            self.check(False, "build123d is not importable under %s: the "
+                              "solid checks cannot run. fix: run with the "
+                              "case venv python, e.g. case/.venv/bin/python "
+                              "scripts/case_verify.py CHECKS.py"
+                       % sys.executable, name="build123d importable")
+        return b3d
+
+    def _prism(self, b3d, frame, corners_xy, z0, z1):
+        """A solid prism from a board-frame plan quad and z band, in the case
+        frame.  Built as a loft of two quads, so any rigid frame works."""
+        def ring(z):
+            pts = [b3d.Vector(*frame(x, y, z)) for x, y in corners_xy]
+            return b3d.Wire.make_polygon(pts, close=True)
+        return b3d.Solid.make_loft([ring(z0), ring(z1)])
+
+    @staticmethod
+    def _box_corners(box, grow=0.0):
+        x0, y0, x1, y1 = box
+        return [(x0 - grow, y0 - grow), (x1 + grow, y0 - grow),
+                (x1 + grow, y1 + grow), (x0 - grow, y1 + grow)]
+
+    def _hits(self, solid, shells):
+        """[(shell index, overlap volume)] above CONTACT_VOLUME."""
+        out = []
+        for i, shell in enumerate(shells):
+            try:
+                vol = (solid & shell).volume
+            except Exception:                          # pragma: no cover
+                vol = float("nan")
+            if not vol <= CONTACT_VOLUME:              # catches nan too
+                out.append((i, vol))
+        return out
+
+    def _where(self, solid, shells, frame_hint=""):
+        """' at (x, y, z)' for the first overlap, case frame, or ''."""
+        for shell in shells:
+            try:
+                got = solid & shell
+                if got.volume > CONTACT_VOLUME:
+                    c = got.center()
+                    return " at (%.2f, %.2f, %.2f)" % (c.X, c.Y, c.Z)
+            except Exception:                          # pragma: no cover
+                continue
+        return ""
+
+    def _shell_name(self, shells, names, i):
+        return names[i] if names and i < len(names) else "shell %d" % i
+
+    def _exempt(self, check, ref, exempt):
+        reason = (exempt or {}).get(ref)
+        if reason:
+            self.check(True, "%s %s: exempt (%s)" % (check, ref, reason),
+                       name="%s %s exempt" % (check, ref))
+        return bool(reason)
+
+    def board_in_cavity(self, fit, cavity=None, margin=FIT_MARGIN,
+                        shells=None, frame=None, shell_names=None,
+                        corner_relief=CORNER_RELIEF, tol=TOL):
+        """The board outline, grown by `margin`, fits the cavity.
+
+        Numeric: `cavity` is a board-frame `v.rect`; every outline vertex must
+        stand `margin` inside it.  Solid: the outline polygon, plus a strip
+        `margin` wide outboard of every edge stopping `corner_relief` short of
+        each end, extruded through the board's own thickness, minus mounting
+        holes and cutouts, must meet no plastic in any shell.  The relief is
+        where a cavity fillet meets a square board corner by design
+        (mechanical.md §5); the outline itself still may not touch there.
+        """
+        if not fit or not fit["board"]["outline"]:
+            return self.check(False, "board in cavity: no outline in the "
+                                     "contract", name="board in cavity")
+        poly = fit["board"]["outline"]["polygon"]
+        thick = fit["board"]["thickness"]
+        if shells is None:
+            if cavity is None:
+                return self.check(False, "board in cavity: pass cavity= "
+                                         "(numeric) or shells= and frame=",
+                                  name="board in cavity")
+            slack = min(min(x - cavity.x0, cavity.x1 - x, y - cavity.y0,
+                            cavity.y1 - y) for x, y in poly) - margin
+            return self.check(slack >= -tol,
+                              "board outline in %s: %.3fmm to spare beyond "
+                              "the %.3f margin" % (cavity.name, slack, margin),
+                              name="board outline in cavity")
+        b3d = self._need_b3d()
+        if b3d is None or frame is None:
+            if frame is None:
+                self.check(False, "board in cavity: solid mode needs frame=",
+                           name="board in cavity")
+            return False
+        z0, z1 = -thick + 0.01, -0.01       # inside the slab: seats only touch
+        # The outline itself, then one strip `margin` wide outboard of every
+        # edge.  Strips rather than a rounded offset, because a cavity fillet
+        # meets a square board corner by design (mechanical.md §5: the fillet
+        # cap leaves about 0 at the corner and the full clearance on the sides).
+        quads = [poly]
+        sign = 1.0 if sum(poly[i][0] * poly[(i + 1) % len(poly)][1]
+                          - poly[(i + 1) % len(poly)][0] * poly[i][1]
+                          for i in range(len(poly))) > 0 else -1.0
+        for i in range(len(poly)):
+            a, b = poly[i], poly[(i + 1) % len(poly)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            if length <= 2.0 * corner_relief + 1e-6 or not margin:
+                continue
+            ux, uy = dx / length, dy / length
+            a = (a[0] + ux * corner_relief, a[1] + uy * corner_relief)
+            b = (b[0] - ux * corner_relief, b[1] - uy * corner_relief)
+            nx, ny = sign * uy * margin, -sign * ux * margin
+            quads.append([a, b, (b[0] + nx, b[1] + ny), (a[0] + nx, a[1] + ny)])
+        slab = None
+        for quad in quads:
+            piece = self._prism(b3d, frame, quad, z0, z1)
+            slab = piece if slab is None else slab + piece
+        up = b3d.Vector(*frame(0, 0, z1)) - b3d.Vector(*frame(0, 0, z0))
+        for hole in fit["mounting_holes"]:
+            c = b3d.Vector(*frame(hole["x"], hole["y"], z0))
+            slab = slab - b3d.Solid.make_cylinder(
+                hole["diameter"] / 2.0, up.length,
+                b3d.Plane(origin=c, z_dir=up.normalized()))
+        for cut in fit["board"]["cutouts"]:
+            if len(cut["polygon"]) >= 3:
+                slab = slab - self._prism(b3d, frame, cut["polygon"], z0, z1)
+        hits = self._hits(slab, shells)
+        return self.check(not hits,
+                          "board outline + %.3f side margin through its "
+                          "%.2fmm slab meets %s%s" % (margin, thick, ", ".join(
+                              "%s (%.3f mm^3)"
+                              % (self._shell_name(shells, shell_names, i), v)
+                              for i, v in hits) or "no plastic",
+                              self._where(slab, shells) if hits else ""),
+                          name="board outline in cavity (solid)")
+
+    def cavity_clearance(self, fit, cavity=None, floor_z=None, ceiling_z=None,
+                         margin=FIT_MARGIN, shells=None, frame=None,
+                         shell_names=None, exempt=None, tol=TOL):
+        """Every part body clears the cavity by its z band plus `margin`.
+
+        A part with no z band fails: its height is unknown, so nothing about
+        its fit is known.  Board-inherent parts (holes, fiducials) are
+        skipped, because they have no body.
+
+        Numeric mode: a floor_z or ceiling_z left as None means the case has
+        no surface on that side to check, so that side's clearance is
+        infinite and only the other bound is tested.  The line printed says
+        which bound was not checked.  With both None the z test is not run.
+        """
+        if not fit:
+            return False
+        b3d = self._need_b3d() if shells is not None else None
+        if shells is not None and (b3d is None or frame is None):
+            if frame is None:
+                self.check(False, "cavity clearance: solid mode needs frame=",
+                           name="cavity clearance")
+            return False
+        ok_all = True
+        for part in fit["parts"]:
+            ref = part["ref"]
+            if part.get("board_inherent"):
+                continue
+            if self._exempt("cavity clearance", ref, exempt):
+                continue
+            box, band = part.get("envelope"), part.get("z_band")
+            if not box or not band:
+                ok_all &= self.check(
+                    False, "%s clears the cavity: unknown %s (declare "
+                           "height_mm in design.py PARTS, or link a STEP "
+                           "model)" % (ref, "height" if box else "plan box"),
+                    name="%s clears the cavity" % ref)
+                continue
+            if shells is None:
+                if cavity is not None:
+                    part_shape = Shape(ref, *box)
+                    ok_all &= self.inside(part_shape, cavity, margin, tol)
+                if floor_z is None and ceiling_z is None:
+                    continue
+                lo = (band[0] - floor_z if floor_z is not None
+                      else float("inf"))
+                hi = (ceiling_z - band[1] if ceiling_z is not None
+                      else float("inf"))
+                ok_all &= self.check(min(lo, hi) >= margin - tol,
+                                     "%s z %.3f..%.3f clears floor %s and "
+                                     "ceiling %s: %.3fmm (need %.3f)"
+                                     % (ref, band[0], band[1],
+                                        "not checked" if floor_z is None
+                                        else floor_z,
+                                        "not checked" if ceiling_z is None
+                                        else ceiling_z, min(lo, hi), margin),
+                                     name="%s z clears the cavity" % ref)
+                continue
+            hits, worst = [], None
+            for body in part.get("bodies") or [{"bbox": box, "z": band,
+                                                 "source": "envelope"}]:
+                solid = self._prism(b3d, frame,
+                                    self._box_corners(body["bbox"], margin),
+                                    body["z"][0] - margin,
+                                    body["z"][1] + margin)
+                got = self._hits(solid, shells)
+                if got:
+                    hits += got
+                    worst = worst or body["source"] + self._where(solid, shells)
+            ok_all &= self.check(
+                not hits,
+                "%s %d body box(es) (z %.3f..%.3f, %s) + %.3f margin meet %s"
+                % (ref, len(part.get("bodies") or [1]), band[0], band[1],
+                   worst or part.get("z_source"), margin,
+                   ", ".join("%s (%.3f mm^3)"
+                             % (self._shell_name(shells, shell_names, i), v)
+                             for i, v in hits) or "no plastic"),
+                name="%s clears the cavity (solid)" % ref)
+        return ok_all
+
+    def connector_openings(self, fit, shells=None, frame=None,
+                           margin=FIT_MARGIN, reach=PROBE_REACH,
+                           shell_names=None, openings=None, exempt=None,
+                           tol=TOL):
+        """Every external mating face has a clear path out through its wall.
+
+        Solid: a probe the width of the part's envelope plus `margin` on each
+        side, over its z band plus `margin`, runs from the part's leading face
+        to `reach` mm past the board edge (or straight up/down for a top/bottom
+        face) and must meet no plastic and end outside every shell.  Numeric:
+        `openings={ref: {"wall": "east", "span": (a, b), "z": (z0, z1)}}`,
+        board frame, must contain the contract's span and z band plus margin.
+        """
+        if not fit:
+            return False
+        b3d = self._need_b3d() if shells is not None else None
+        if shells is not None and (b3d is None or frame is None):
+            if frame is None:
+                self.check(False, "connector openings: solid mode needs "
+                                  "frame=", name="connector openings")
+            return False
+        ok_all, seen = True, 0
+        for part in fit["parts"]:
+            m, ref = part.get("mating"), part["ref"]
+            # `connector` is in contracts written since the key was added;
+            # an older contract only marks connectors by role.
+            is_conn = part.get("connector", part.get("role") == "connector")
+            if not m and is_conn and not part.get("board_inherent"):
+                seen += 1
+                if not self._exempt("opening", ref, exempt):
+                    ok_all &= self.check(
+                        False, "%s opening: connector has no mating record "
+                               "(undeclared mating_direction)" % ref,
+                        name="%s has a clear opening" % ref)
+                continue
+            if not m or m.get("kind") not in ("edge", "top", "bottom"):
+                continue
+            seen += 1
+            if self._exempt("opening", ref, exempt):
+                continue
+            box, band = part.get("envelope"), part.get("z_band")
+            if m.get("verdict") == "FAIL" or not box or not band:
+                ok_all &= self.check(
+                    False, "%s opening: cannot be checked (%s)"
+                    % (ref, m.get("reason") if m.get("verdict") == "FAIL"
+                       else "no plan box or no z band"),
+                    name="%s has a clear opening" % ref)
+                continue
+            if shells is None:
+                ok_all &= self._opening_numeric(part, openings or {}, margin,
+                                                tol)
+                continue
+            solid, outer = self._probe(b3d, frame, part, margin, reach)
+            hits = self._hits(solid, shells)
+            # The far end must be outside the case's overall box: a probe
+            # that stops in another internal pocket found no opening.
+            lo = [min(sh.bounding_box().min.to_tuple()[k] for sh in shells)
+                  for k in range(3)]
+            hi = [max(sh.bounding_box().max.to_tuple()[k] for sh in shells)
+                  for k in range(3)]
+            end = outer.to_tuple()
+            outside = any(end[k] < lo[k] - tol or end[k] > hi[k] + tol
+                          for k in range(3))
+            face = m.get("face_body") or {}
+            band = face.get("z") or band
+            ok_all &= self.check(
+                not hits and outside,
+                "%s %s opening (%s face, z %.3f..%.3f, +%.3f margin) meets %s"
+                "%s" % (ref, m["wall"], m["direction_local"], band[0],
+                        band[1], margin,
+                        ", ".join("%s (%.3f mm^3)"
+                                  % (self._shell_name(shells, shell_names, i),
+                                     v) for i, v in hits) or "no plastic",
+                        "" if outside else "; the probe ends INSIDE the case "
+                        "(no opening through the wall, or raise reach=)"),
+                name="%s has a clear opening" % ref)
+        if not seen:
+            self.check(True, "connector openings: no external mating face in "
+                             "the contract", name="connector openings")
+        return ok_all
+
+    def _probe(self, b3d, frame, part, margin, reach):
+        """(probe solid, its outer end point) for one mating part."""
+        m = part["mating"]
+        face = m.get("face_body") or {}
+        box = face.get("bbox") or part["envelope"]
+        band = face.get("z") or part["z_band"]
+        z0, z1 = band[0] - margin, band[1] + margin
+        if m["kind"] in ("top", "bottom"):
+            corners = self._box_corners(box, margin)
+            if m["kind"] == "top":
+                lo, hi = band[1], band[1] + reach
+            else:
+                lo, hi = band[0] - reach, band[0]
+            cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+            outer = b3d.Vector(*frame(cx, cy, hi if m["kind"] == "top"
+                                      else lo))
+            return self._prism(b3d, frame, corners, lo, hi), outer
+        op = m["opening"]
+        n = op["normal"][:2]
+        t = (-n[1], n[0])
+        (ax, ay), (bx, by) = op["span_points"]
+        px, py = op["plane_point"]
+        lead = -m["body_to_edge_mm"]          # leading face, along n from edge
+        start, end = lead, reach
+        a = (ax - t[0] * margin, ay - t[1] * margin)
+        b = (bx + t[0] * margin, by + t[1] * margin)
+        corners = [(a[0] + n[0] * start, a[1] + n[1] * start),
+                   (b[0] + n[0] * start, b[1] + n[1] * start),
+                   (b[0] + n[0] * end, b[1] + n[1] * end),
+                   (a[0] + n[0] * end, a[1] + n[1] * end)]
+        outer = b3d.Vector(*frame(px + n[0] * end, py + n[1] * end,
+                                  (band[0] + band[1]) / 2.0))
+        return self._prism(b3d, frame, corners, z0, z1), outer
+
+    def _opening_numeric(self, part, openings, margin, tol):
+        m, ref = part["mating"], part["ref"]
+        got = openings.get(ref)
+        if not got:
+            return self.check(False, "%s opening: the case declares none "
+                                     "(needed on the %s wall)" % (ref,
+                                                                  m["wall"]),
+                              name="%s has a clear opening" % ref)
+        want_wall = m["wall"]
+        if m["kind"] == "edge":
+            pts = m["opening"]["span_points"]
+            axis = 0 if abs(m["opening"]["normal"][0]) < 0.5 else 1
+            need = (min(p[axis] for p in pts) - margin,
+                    max(p[axis] for p in pts) + margin)
+        else:
+            box = part["envelope"]
+            need = (box[0] - margin, box[2] + margin)
+        band = part["z_band"]
+        span, zs = got.get("span") or (0, 0), got.get("z") or (0, 0)
+        slack = min(need[0] - span[0], span[1] - need[1],
+                    band[0] - margin - zs[0], zs[1] - band[1] - margin)
+        return self.check(got.get("wall") == want_wall and slack >= -tol,
+                          "%s opening on %s (need %s): %.3fmm to spare"
+                          % (ref, got.get("wall"), want_wall, slack),
+                          name="%s has a clear opening" % ref)
+
+    def min_wall(self, solid, floor_mm=MIN_WALL_MM, name="shell",
+                 spacing=2.0, max_per_axis=64, exempt=None, tol=TOL):
+        """The thinnest local wall of `solid` must be at least `floor_mm`.
+
+        Samples each face on a grid (about `spacing` mm apart, inside the
+        face's trimmed boundary), casts a ray inward along the face normal,
+        and takes the distance to where it next leaves the material.  The
+        grid runs in the face's own (u, v) parameters, one count per axis
+        from that axis's extent, capped at `max_per_axis` (64) so one large
+        face cannot cost thousands of ray casts.
+
+        Residual gap: a thin region narrower than the sample spacing, or on
+        a face longer than 64 x spacing (128 mm at the default), can fall
+        between samples and be missed.  Lower `spacing` near a feature that
+        must be proven.  A
+        deliberate thin feature, such as the cap over a blind insert bore
+        (mechanical.md §1, 0.5 to 0.6 mm), is excluded with `exempt=[(reason,
+        (x0, y0, z0, x1, y1, z1))]` in the case frame, and each exemption is
+        printed with how many samples it removed.
+        """
+        b3d = self._need_b3d()
+        if b3d is None:
+            return False
+        worst, where, samples, skipped = float("inf"), None, 0, {}
+        for face in solid.faces():
+            nu, nv = self._grid(face, spacing, max_per_axis)
+            for i in range(nu):
+                for j in range(nv):
+                    u, w = (i + 0.5) / nu, (j + 0.5) / nv
+                    try:
+                        p = face.position_at(u, w)
+                        if not face.is_inside(p, 1e-4):
+                            continue
+                        normal = face.normal_at(p)
+                    except Exception:                  # pragma: no cover
+                        continue
+                    box_hit = None
+                    for reason, (x0, y0, z0, x1, y1, z1) in exempt or ():
+                        if x0 <= p.X <= x1 and y0 <= p.Y <= y1 \
+                                and z0 <= p.Z <= z1:
+                            box_hit = reason
+                            break
+                    if box_hit:
+                        skipped[box_hit] = skipped.get(box_hit, 0) + 1
+                        continue
+                    inward = -normal
+                    try:
+                        hits = solid.find_intersection_points(
+                            b3d.Axis(p, inward))
+                    except Exception:                  # pragma: no cover
+                        continue
+                    ds = [(h[0] - p).dot(inward) for h in hits]
+                    ds = [d for d in ds if d > 1e-4]
+                    if not ds:
+                        continue
+                    samples += 1
+                    if min(ds) < worst:
+                        worst, where = min(ds), p
+        for reason, count in sorted(skipped.items()):
+            self.check(True, "%s thinnest wall: exempt region (%s), %d "
+                             "sample(s)" % (name, reason, count),
+                       name="%s thin region exempt: %s" % (name, reason))
+        if not samples:
+            return self.check(False, "%s thinnest wall: no sample hit the "
+                                     "solid" % name,
+                              name="%s thinnest wall" % name)
+        return self.check(worst >= floor_mm - tol,
+                          "%s thinnest wall = %.3fmm at (%.2f, %.2f, %.2f) "
+                          "over %d samples (need >= %.3f)"
+                          % (name, worst, where.X, where.Y, where.Z, samples,
+                             floor_mm),
+                          name="%s thinnest wall" % name)
+
+    @staticmethod
+    def _grid(face, spacing, cap):
+        """(nu, nv) samples so neighbours sit about `spacing` mm apart.
+
+        Each axis count comes from the face's extent along that parameter
+        direction: the distance between position_at(0, .5) and (1, .5) for
+        u, and between (.5, 0) and (.5, 1) for v.  That chord understates a
+        curved face's length, so curved faces are sampled at least as
+        densely as a flat face of the same chord.  The earlier sqrt(area)
+        rule gave a 100 x 2 mm strip the same count on both axes, about
+        7 mm apart along its length.
+        """
+        def length(a, b):
+            try:
+                return (face.position_at(*a) - face.position_at(*b)).length
+            except Exception:                          # pragma: no cover
+                return math.sqrt(max(face.area, 0.0))
+        lu = length((0.0, 0.5), (1.0, 0.5))
+        lv = length((0.5, 0.0), (0.5, 1.0))
+        return (max(2, min(cap, int(lu / spacing) + 1)),
+                max(2, min(cap, int(lv / spacing) + 1)))
+
+    def fastener_stackup(self, name, screw_len, floor_thk, counterbore,
+                         cavity, bore_depth, pcb_thk=None, contract=None,
+                         engagement_min=ENGAGEMENT_MIN, pitch=0.4,
+                         tol=TOL):
+        """mechanical.md §2: travel, engagement, and the head shoulder.
+
+        travel = (floor - counterbore) + cavity + board; engagement =
+        screw - travel, inside [max(engagement_min, 2 x pitch), bore_depth].
+        The board thickness comes from the contract when one is given, so a
+        thicker board cannot leave a screw length behind.
+        """
+        if pcb_thk is None:
+            pcb_thk = (contract or {}).get("board", {}).get("thickness")
+        if pcb_thk is None:
+            return self.check(False, "%s: no board thickness (pass pcb_thk= "
+                                     "or contract=)" % name, name=name)
+        shoulder = floor_thk - counterbore
+        travel = shoulder + cavity + pcb_thk
+        engagement = screw_len - travel
+        floor = max(engagement_min, 2.0 * pitch)
+        self.check(shoulder >= SHOULDER_MIN - tol,
+                   "%s shoulder under the head = %.3fmm (need >= %.3f)"
+                   % (name, shoulder, SHOULDER_MIN))
+        return self.check(
+            floor - tol <= engagement <= bore_depth + tol,
+            "%s: L%.2f - travel %.3f [shoulder %.2f + cavity %.2f + board "
+            "%.2f] = engagement %.3fmm (need %.3f..%.3f)"
+            % (name, screw_len, travel, shoulder, cavity, pcb_thk,
+               engagement, floor, bore_depth))
+
     # -- reporting --------------------------------------------------------
 
     @property
@@ -463,7 +1051,7 @@ def load_checks_module(path):
     return module
 
 
-def run_checks(path, only=None, loud=True):
+def run_checks(path, only=None, loud=True, contract=None):
     module = load_checks_module(path)
     entry = getattr(module, "checks", None)
     if entry is None or not callable(entry):
@@ -472,6 +1060,7 @@ def run_checks(path, only=None, loud=True):
             "  fix: add `def checks(v):` and build assertions on `v` "
             "(see scripts/case_verify.py's docstring)" % path)
     suite = Suite(loud=loud, only=only)
+    suite.contract_path = contract or os.environ.get("HW_FORGE_CONTRACT")
     entry(suite)
     return suite
 
@@ -525,7 +1114,7 @@ def compare_names(current, baseline, indent="  ", map_suite=None,
         suites_was = {s for s, _ in was}
         if suites_now.isdisjoint(suites_was):
             print("%sSUITE RENAMED, not revised: %s -> %s. Every baseline "
-                  "check would retire\n%sfor that reason alone — a suite name "
+                  "check would retire\n%sfor that reason alone: a suite name "
                   "is part of a check's identity, so it\n%smust not carry a "
                   "revision, a date or a board hash. Comparing on check\n"
                   "%snames only; fix the generator, or pass --map-suite "
@@ -559,7 +1148,7 @@ def compare_names(current, baseline, indent="  ", map_suite=None,
           % (indent, sum(now.values()), sum(was.values()),
              sum(now[k] for k in added), sum(was[k] for k in retired)))
     if retired:
-        print("%sSTATE A REASON for every retired check in your report — a "
+        print("%sSTATE A REASON for every retired check in your report: a "
               "retirement\n%swith a stated geometric reason is knowledge; one "
               "with a smaller number\n%sis a regression nobody can see."
               % (indent, indent, indent))
@@ -590,6 +1179,9 @@ def main():
     ap.add_argument("--suite-blind", action="store_true",
                     help="compare check identities on the check name alone, "
                          "ignoring which suite registered them")
+    ap.add_argument("--contract", metavar="FIT.json",
+                    help="the board's fit contract (kicad_geom.py --contract); "
+                         "a checks file reads it with v.contract()")
     args = ap.parse_args()
 
     map_suite = {}
@@ -599,7 +1191,9 @@ def main():
         old_name, new_name = item.split("=", 1)
         map_suite[old_name.strip()] = new_name.strip()
 
-    suite = run_checks(args.checks, args.suite, loud=not (args.quiet or args.json))
+    suite = run_checks(args.checks, args.suite,
+                       loud=not (args.quiet or args.json),
+                       contract=args.contract)
     summary = suite.summary()
 
     if args.json:
@@ -633,7 +1227,7 @@ def main():
                                         suite_blind=args.suite_blind)
 
     if not summary["checks"]:
-        raise SystemExit("error: %s registered no checks — nothing was "
+        raise SystemExit("error: %s registered no checks; nothing was "
                          "verified" % args.checks)
     if summary["failed"]:
         sys.exit(1)

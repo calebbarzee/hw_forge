@@ -126,6 +126,34 @@ ERC is KiCad's electrical rule check. DRC is its design rule check on a board.
    project's exported BOM listed its four mounting holes as parts to source,
    because nothing had told the emitter otherwise.
 
+7. **`kicad_schrules.py` exits 0, alongside ERC 0 and the BOM audit.** ERC
+   proves the schematic is consistent. It does not notice a supply pin with no
+   capacitor, a rail with no bulk capacitance, an addressable LED with no data
+   resistor, an I2C or reset net with no pull-up, or a connector bringing in
+   power with nothing in front of it. This check does:
+
+   ```bash
+   python3 scripts/kicad_schrules.py PROJECT_DIR/PROJECT.kicad_sch \
+       [--rules PROJECT_DIR/sch-rules.json] [--set RULE.KEY=VALUE]
+   ```
+
+   It exits 1 on an error-severity finding, 2 when the tool or its input
+   failed (no kicad-cli, no such file, bad configuration), and 0 otherwise,
+   so a warning is reported and does not fail. Connector input protection is
+   a warning by default; read each of its findings and fix it or waive it
+   with a reason. Parts marked DNP count for nothing. Defaults are
+   `templates/sch-rules.json`; a
+   project that needs different patterns or limits copies that file, keeps
+   the keys it changes, and commits it. The check reads connectivity, not
+   placement: a capacitor counts when it is on the net, so distance to the pin
+   stays a board-side question for phase 4.
+
+   A finding the design decided against is waived, not hidden. Add a `waive`
+   entry (`match` regex, `reason` text) to that rule in the project's rules
+   file. It is the machine form of the rejection table in gate 3, and the
+   output lists it with its reason. Lowering a severity or disabling a rule to
+   reach exit 0 is the same fault as demoting an ERC rule without a comment.
+
 ## Rules
 
 - Read `references/electronics.md` before deciding power topology, and recall
@@ -143,6 +171,12 @@ ERC is KiCad's electrical rule check. DRC is its design rule check on a board.
   in firmware.
 - Build the proto slice first: one instance of anything repeated, gated, before
   instantiating N.
+- A schematic rule finding is fixed in the emitter or waived with a reason,
+  never quieted. Fix: add the capacitor, the resistor or the pull-up to
+  `design.py` and regenerate. Waive: the decision is already in the power
+  decision record, for example "no bulk capacitor on the raw input, the module
+  has its own" (`references/electronics.md` sections 4 and 6), and the waiver
+  quotes it.
 
 ## Barrier clause
 
@@ -169,11 +203,13 @@ just run.
 ```
 REPORT
 Status:     the gate command you ran, and its output verbatim, plus
-            kicad_bom.py audit's command and output verbatim
+            kicad_bom.py audit's and kicad_schrules.py's commands and
+            output verbatim
 Changed:    files touched, what changed in each
 Numbers:    ERC count before/after; net count, part count, spare pins;
             kicad_bom.py audit: sourced parts complete, board-inherent
-            parts correctly excluded
+            parts correctly excluded; kicad_schrules.py: errors, warnings,
+            waivers, each waiver with its reason
 Decisions:  anything you decided that was not locked, and why
 Rejected:   what you tried or considered and dropped, with the evidence
 For the next agent (PCB):
