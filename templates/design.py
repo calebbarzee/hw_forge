@@ -379,13 +379,13 @@ BOARD_INHERENT = {
 #
 # The emitters write mating_direction, height_mm, interface and access onto
 # the footprint as properties of exactly those names as well.  The forked
-# kicad-cli's `connector_edge` DRC does not read that property yet: its
-# current baseline binary reads a board-frame field `Mating_Direction` with
-# values N, S, E, W.  The fork's owner is changing it to read the footprint
-# property `mating_direction` with +x -x +y -y +z -z in footprint axes (their
-# workstream C, not yet landed).  Once that lands, the board and the fit
-# contract read one source.  Until then hw_forge's own fit contract
-# (kicad_geom.py --contract) is the check that sees the mating end.
+# kicad-cli's `connector_edge` DRC reads the `mating_direction` property too
+# (+x -x +y -y +z -z in footprint axes, rotated by the footprint, y mirrored
+# on the back face, +z and -z skipped), so the board, the DRC and the fit
+# contract (kicad_geom.py --contract) read one source.  Without the property
+# the DRC falls back to the shortest body to edge distance.  The old
+# board-frame field `Mating_Direction` (N/S/E/W) is no longer read (fork
+# master, 2026-10-03).
 #
 # A part is a connector to the fit contract when this table gives it a role,
 # an interface or a mating_direction, or its reference prefix is J, P, USB,

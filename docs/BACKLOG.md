@@ -36,7 +36,7 @@ as fixed in `hexpad/GAPS.md` and as open here.
 | **B5** | `kicad_pourcheck.py`: island count and narrowest channel per zone | the parser decision: extend the s-expression reader to zones, tracks, vias and nets, or accept a `pcbnew`-only tool |
 | **B6** | Writing adopted placements back into a generator | a settled convention for where adopted placements live (a single `ADOPTED = {...}` in `design.py`) |
 | **B7** | Acid-trap and vias-under-parts checks on autorouted copper | a geometry check with no mechanism today: acid traps need an angle and proximity check on trace joints; vias under parts need z-aware clearance, and `kicad_geom.py` has no z data |
-| **B8** | Connector mating face against the board edge | *(mechanism shipped)*; open remainder: a connector with no declaration, no J/P/USB/CN/X prefix and no `Connector*` library is not seen; the footprint-local axis per stock footprint is verified for one USB-C part so far; the fork's `connector_edge` reads another field until its workstream C lands |
+| **B8** | Connector mating face against the board edge | *(mechanism shipped)*; open remainder: a connector with no declaration, no J/P/USB/CN/X prefix and no `Connector*` library is not seen; the footprint-local axis per stock footprint is verified for one USB-C part so far; the fork's `connector_edge` and the fit contract read one property, `mating_direction` (fork master, 2026-10-03) |
 | **B9** | Local wall-thickness floor in `case_verify.py` | *(mechanism shipped)*; open remainder: ray sampling about `spacing` (2 mm) apart, capped at 64 samples per face axis, can miss a thin region smaller than its grid |
 | **B10** | Courtyard gap around tall parts | an emitter that writes KiCad's component class `TALL` from `design.py` `height_mm`; without it a rule on that class never fires |
 
@@ -379,13 +379,13 @@ limit (`UC-ALL-05`: 0.5 mm for USB-C). The case side is `case_verify.py`'s
 meet no plastic, so an opening cut in the wrong wall fails, and a connector
 with no mating record fails.
 
-The forked kicad-cli's `connector_edge` DRC does not read the same source yet.
-Its current baseline binary reads a board-frame field `Mating_Direction` with
-values N, S, E, W. The fork's owner is changing it to read the footprint
-property `mating_direction` with +x -x +y -y +z -z in footprint axes (their
-workstream C, not yet landed). Once that lands, one footprint field serves
-both checks. Until then the fit contract is the check that sees the mating
-end.
+The forked kicad-cli's `connector_edge` DRC reads the same source: the
+footprint property `mating_direction` (+x -x +y -y +z -z in footprint axes,
+rotated by the footprint, y mirrored on the back face, +z and -z skipped).
+Its message carries `body_to_edge_mm` and the angle to the nearest edge
+normal. Without the property it falls back to the shortest body to edge
+distance. The old board-frame field `Mating_Direction` (N/S/E/W) is no longer
+read (fork master, 2026-10-03).
 
 Verified 2026-10-03 (`kb/runs/quality-gates-2026-10-03.md`) on scratch copies
 of hexpad and mic_buffer and on a synthetic board: the verification covers
@@ -401,9 +401,10 @@ beyond one notch, or a connector on a curved edge.
   footprint library not named `Connector*` (a module's USB port, a switch
   used as a connector) is not recognised. The phase-1 resolution step has to
   declare it.
-- **The fork's `connector_edge`** reads `Mating_Direction` (N/S/E/W, board
-  frame) until the fork's workstream C lands, so the two checks can disagree
-  on a part whose fields are set for only one of them.
+- **The fork's `connector_edge`** reads the footprint property
+  `mating_direction`, as the fit contract does. A part with a `PARTS` row but
+  no emitted property falls back to the shortest body to edge distance in the
+  fork, so the two checks can still disagree there.
 - **The footprint-local axis per stock footprint** is verified for the GCT
   USB4105 (`kb/interfaces/usb-c-receptacle.md`, from the footprint's own
   `PCB Edge` line) and inferred for others. Each further family needs one

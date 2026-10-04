@@ -77,13 +77,13 @@ must provide. The schema is in `kicad_geom.py`'s docstring.
 The case reads that file. It never retypes a number from it, because a
 retyped number is the one that drifts (`references/mechanical.md` §7 item 3).
 
-The forked `kicad-cli`'s `connector_edge` DRC does not read the same source
-yet. Its current baseline binary reads a board-frame field `Mating_Direction`
-with values N, S, E, W. The fork's owner is changing it to read the footprint
-property `mating_direction` with +x -x +y -y +z -z in footprint axes (their
-workstream C, not yet landed). Once that lands, one footprint field serves
-both checks. Until then the fit contract is the check that sees the mating
-end.
+The forked `kicad-cli`'s `connector_edge` DRC reads the same source: the
+footprint property `mating_direction` (+x -x +y -y +z -z in footprint axes,
+rotated by the footprint, y mirrored on the back face, +z and -z skipped).
+Its message carries `body_to_edge_mm` and the angle to the nearest edge
+normal. Without the property it falls back to the shortest body to edge
+distance. Since 2026-10-03 the old board-frame field `Mating_Direction`
+(N/S/E/W) is no longer read.
 
 ### Declarations are part of the check
 

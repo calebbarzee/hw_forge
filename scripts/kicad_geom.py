@@ -191,14 +191,13 @@ because the board file carries neither (`templates/design.py`):
 A footprint property of the same name (`mating_direction`, `height_mm`,
 `interface`, `access`) fills any key the PARTS row leaves unset.
 
-The forked kicad-cli's `connector_edge` DRC and this contract do not yet read
-one source.  The fork's current baseline binary reads a board-frame field
-`Mating_Direction` with values N, S, E, W.  The fork's owner is changing it to
-read the footprint property `mating_direction` with +x -x +y -y +z -z in
-footprint axes (their workstream C, not yet landed).  Once that lands, an
-emitter that writes `mating_direction` as a footprint field gives both checks
-one source.  Until then hw_forge's own contract is the check that sees the
-mating end.
+The forked kicad-cli's `connector_edge` DRC and this contract read one
+source: the footprint property `mating_direction` (+x -x +y -y +z -z in
+footprint axes, rotated by the footprint, y mirrored on the back face, +z and
+-z skipped).  The DRC message carries `body_to_edge_mm` and the angle to the
+nearest edge normal.  Without the property the DRC falls back to the shortest
+body to edge distance.  The old board-frame field `Mating_Direction` (N/S/E/W)
+is no longer read (fork master, 2026-10-03).
 
 A part with no declared height takes one from its STEP model
 (`kicad_3d.model_extent`), and the record names which source fired.  A
@@ -277,9 +276,8 @@ import re
 import sys
 
 # Footprint properties the fit contract reads when design.py's PARTS table
-# does not state them.  The forked kicad-cli's `connector_edge` DRC will read
-# the same `mating_direction` property once the fork's workstream C lands; its
-# current binary reads a board-frame `Mating_Direction` (N/S/E/W) instead.
+# does not state them.  The forked kicad-cli's `connector_edge` DRC reads the
+# same `mating_direction` property (fork master, 2026-10-03).
 FIT_FIELDS = ("mating_direction", "height_mm", "interface", "access")
 
 # Board-level graphic items that can carry the outline.

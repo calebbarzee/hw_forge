@@ -47,11 +47,10 @@
 	(condition "A.Reference == 'U_SET_ME' && A.Pad_Number == '2'"))
 
 # courtyard to outline. 0.5 mm: fork rule library policy.
-# the current fork binary reads the mating end from a board-frame field
-# Mating_Direction (N, S, E, W). the fork's workstream C, not yet landed, moves
-# it to the footprint property mating_direction (+x -x +y -y +z -z, footprint
-# axes), the one kicad_geom.py --contract reads. until it lands, the contract is
-# the check that sees the mating end.
+# sees the mating end when the footprint carries mating_direction; without it,
+# shortest body to edge distance. the property (+x -x +y -y +z -z, footprint
+# axes) is the one kicad_geom.py --contract reads. the old board-frame field
+# Mating_Direction (N/S/E/W) is no longer read (fork master, 2026-10-03).
 # PARAM: enclosure wall and opening tolerance.
 (rule "connectors_on_edge"
 	(constraint connector_edge (max 0.5mm))
