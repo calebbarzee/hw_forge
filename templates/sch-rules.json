@@ -36,11 +36,16 @@
     "rules.open_drain_pullups.classes": "{name: {match, min_ohms, max_ohms}}. A net takes the first class, in name order, whose match regex hits its name or a pin name on it. Defaults: i2c 1 k to 10 k, reset 4.7 k to 100 k. A project that changes one class restates the whole classes object.",
     "rules.open_drain_pullups.min_ohms": "Lowest accepted pull-up value, in ohms, for a net no class matches.",
     "rules.open_drain_pullups.max_ohms": "Highest accepted pull-up value, in ohms, for a net no class matches.",
-    "rules.connector_input_protection": "Each connector pin on a patterns.vin_net net has a fuse, a series inductor or bead, or a TVS diode on that net. A warning by default, because a module often carries the protection.",
+    "rules.connector_input_protection": "Each connector pin on a patterns.vin_net net has a fuse, a series inductor or bead, a shunt TVS or zener (cathode on the input, anode on ground), a series diode (anode on the input), or a series resistor of at most max_series_ohms into a power rail. A warning by default, because a module often carries the protection.",
     "rules.connector_input_protection.connector_prefixes": "Reference prefixes of connectors.",
     "rules.connector_input_protection.fuse_prefixes": "Reference prefixes of fuses.",
     "rules.connector_input_protection.series_prefixes": "Reference prefixes of series inductors and beads.",
-    "rules.connector_input_protection.tvs_prefixes": "Reference prefixes of parts that may be a TVS, in addition to prefixes.diode. Matched with patterns.tvs_value."
+    "rules.connector_input_protection.tvs_prefixes": "Reference prefixes of parts that may be a TVS, in addition to prefixes.diode. Matched with patterns.tvs_value. A two-pin TVS counts only with its cathode on the input net and its anode on ground (pin names K/A from the netlist libpart, else pin 1 = K, pin 2 = A as in Device:D); a bidirectional TVS (pins A1/A2) with one pin on each; a part with more pins with one pin on the input and one on ground.",
+    "rules.connector_input_protection.shunt_diode_symbol": "Regex on the symbol's LIB:PART that marks a part as a shunt TVS or zener whatever its value. Same orientation test as tvs_prefixes.",
+    "rules.connector_input_protection.series_diode_prefixes": "Reference prefixes of a series diode: a two-pin part with its anode on the input net and its cathode on another net that is not ground (a reverse-polarity Schottky). A diode fitted the other way round does not count. A diode to ground is a shunt and does not count unless it is a TVS or zener.",
+    "rules.connector_input_protection.series_diode_symbol": "Regex on the symbol's LIB:PART that also marks a two-pin part as a diode, whatever its reference prefix.",
+    "rules.connector_input_protection.series_resistor_prefixes": "Reference prefixes of a series resistor from the input net to a power rail (a current limit or supply filter). The far net must have a power_in pin or match patterns.power_net, so a divider's top leg into a sense net does not count.",
+    "rules.connector_input_protection.max_series_ohms": "Largest series resistor value that counts as input protection, in ohms (a number or a string such as \"4R7\"). Default 100."
   },
   "prefixes": {
     "capacitor": "C[A-Z]*",
@@ -102,7 +107,12 @@
       "connector_prefixes": ["J", "USB"],
       "fuse_prefixes": ["F"],
       "series_prefixes": ["L", "FB"],
-      "tvs_prefixes": ["TVS"]
+      "tvs_prefixes": ["TVS"],
+      "series_diode_prefixes": ["D"],
+      "series_diode_symbol": "^Device:D",
+      "shunt_diode_symbol": "(?i):D_(Zener|TVS)",
+      "series_resistor_prefixes": ["R"],
+      "max_series_ohms": 100
     }
   }
 }

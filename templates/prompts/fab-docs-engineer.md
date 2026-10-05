@@ -18,7 +18,7 @@ is specific to this run.
 {{locked_decisions}}
 
 ```
-LOCKED DECISIONS — do not relitigate, do not silently deviate
+LOCKED DECISIONS: do not relitigate, do not silently deviate
 
 BARRIER CLAUSE
 If one of these makes your gate impossible, or forces a materially worse
@@ -27,7 +27,7 @@ design, STOP and return:
   BARRIER
   Blocked:         what cannot be done, and which gate it fails
   Locked decision: the exact decision in conflict
-  Why:             the mechanism, with evidence — violation counts, measured
+  Why:             the mechanism, with evidence: violation counts, measured
                    clearances, the report file and record that shows it
   Options:         A / B / C, each with cost and what it gives up
   Recommendation:  which, and why

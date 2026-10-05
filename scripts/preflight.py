@@ -16,6 +16,15 @@ known-good artifact, separates "the tools changed" from "my design is wrong".
 Every failing line carries the exact command that fixes it.  Exit status is 0
 only when nothing failed; warnings do not fail the run.
 
+With --project it also checks the project: every library-table URI resolves
+(KiCad path variables such as ${KICAD10_FOOTPRINT_DIR} resolved from the
+environment, KiCad's own kicad_common.json, or the install; one it cannot
+resolve is a warning naming it, never an ok), every 3D model link of the
+project's own footprints and of every footprint placed on a board resolves,
+`design.py` imports under the system python and under KiCad's bundled one,
+and a project Makefile carries the shipped template's version stamp
+(templates/Makefile, `hw_forge Makefile template version: N`).
+
 --smoke needs a project whose board is already known good (its gate passes).
 It re-runs the gate, then regenerates or reloads the board through pcbnew and
 re-gates it, and diffs the violation counts.  A clean board that comes back
@@ -321,6 +330,101 @@ _PROBE_DRU = """(version 1)
 """
 
 
+# Constraint keywords stock KiCad 10.0.5 compiles: the switch in
+# DRC_RULES_PARSER::parseConstraint (pcbnew/drc/drc_rule_parser.cpp at tag
+# 10.0.5), plus the three deprecated spellings it still accepts with a
+# warning (mechanical_clearance, mechanical_hole_clearance, hole).  Any other
+# keyword makes stock drop the whole file, silently, exit 0.
+STOCK_CONSTRAINTS = (
+    "annular_width", "assertion", "bridged_mask", "clearance",
+    "connection_width", "courtyard_clearance", "creepage", "diff_pair_gap",
+    "diff_pair_uncoupled", "disallow", "edge_clearance", "hole",
+    "hole_clearance", "hole_size", "hole_to_hole", "length",
+    "mechanical_clearance", "mechanical_hole_clearance",
+    "min_resolved_spokes", "physical_clearance", "physical_hole_clearance",
+    "silk_clearance", "skew", "solder_mask_expansion", "solder_mask_sliver",
+    "solder_paste_abs_margin", "solder_paste_rel_margin", "text_height",
+    "text_thickness", "thermal_relief_gap", "thermal_spoke_width",
+    "track_angle", "track_segment_length", "track_width", "via_count",
+    "via_dangling", "via_diameter", "zone_connection")
+_ANY_CONSTRAINT = re.compile(r"\(\s*constraint\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+# The per-violation keys the fork's report contract adds (reports.md in the
+# fork, schema drc.v1.json).  Each is null when it does not apply, never
+# missing, so presence of the key is the signal, not its value.
+MACHINE_KEYS = ("rule", "rule_source", "constraint", "actual", "required")
+
+_CAPS = {}                  # per process only: one probe per run, no disk cache
+
+
+def drc_capabilities(cli):
+    """What this kicad-cli's DRC and ERC accept and write, probed once.
+
+    Returns a dict:
+
+      severity_override      `pcb drc --help` lists --severity-override
+      strict_rules           `pcb drc --help` lists --strict-rules
+      erc_severity_override  `sch erc --help` lists --severity-override
+      machine_fields         the probe report's violations carry MACHINE_KEYS
+                             and its items carry `reference`
+      fork_rules             "fork" | "stock" | "error", fork_drc_probe's verdict
+      detail                 that verdict's detail string
+
+    The flags are read from the help text, the fields from one DRC run on the
+    probe board below.  Memoised per process and per binary, never on disk:
+    a rebuilt fork must be re-probed by the next run.
+    """
+    key = os.path.realpath(cli) if cli else None
+    if key in _CAPS:
+        return _CAPS[key]
+    caps = {"severity_override": False, "strict_rules": False,
+            "erc_severity_override": False, "machine_fields": False,
+            "fork_rules": "error", "detail": "no kicad-cli"}
+    if cli:
+        try:
+            drc = run([cli, "pcb", "drc", "--help"])
+            erc = run([cli, "sch", "erc", "--help"])
+            drc_help = (drc.stdout or "") + (drc.stderr or "")
+            erc_help = (erc.stdout or "") + (erc.stderr or "")
+            caps["severity_override"] = "--severity-override" in drc_help
+            caps["strict_rules"] = "--strict-rules" in drc_help
+            caps["erc_severity_override"] = "--severity-override" in erc_help
+        except OSError as exc:
+            caps["detail"] = str(exc)
+            _CAPS[key] = caps
+            return caps
+        state, detail, report = _probe_run(cli)
+        caps["fork_rules"], caps["detail"] = state, detail
+        caps["machine_fields"] = has_machine_fields(report)
+    _CAPS[key] = caps
+    return caps
+
+
+def has_machine_fields(report):
+    """True when any finding in a DRC/ERC report carries the fork's keys."""
+    if not isinstance(report, dict):
+        return False
+    found = [v for key in ("violations", "schematic_parity",
+                           "unconnected_items")
+             for v in report.get(key) or []]
+    found += [v for sheet in report.get("sheets") or []
+              for v in sheet.get("violations") or []]
+    return any(all(k in v for k in MACHINE_KEYS)
+               and all("reference" in item for item in v.get("items") or [])
+               for v in found)
+
+
+def unknown_constraints(path, known):
+    """Constraint keywords in rule file `path` that are not in `known`."""
+    try:
+        with open(path, errors="replace") as fh:
+            text = "\n".join(l for l in fh.read().splitlines()
+                             if not l.lstrip().startswith("#"))
+    except OSError:
+        return []
+    return sorted(set(_ANY_CONSTRAINT.findall(text)) - set(known))
+
+
 def fork_drc_probe(cli):
     """("fork" | "stock" | "error", detail): does `cli` evaluate fork rules?
 
@@ -328,10 +432,14 @@ def fork_drc_probe(cli):
     never by stdout or the exit code: on a fork keyword stock prints nothing
     and exits 0.  A lib_footprint_issues finding also appears on both
     binaries, in a number that depends on the machine's library tables, so
-    the count is not a signal either.
+    the count is not a signal either.  Shares drc_capabilities()'s one run.
     """
-    if not cli:
-        return "error", "no kicad-cli"
+    caps = drc_capabilities(cli)
+    return caps["fork_rules"], caps["detail"]
+
+
+def _probe_run(cli):
+    """(state, detail, report_or_None): one DRC run on the probe board."""
     tmp = tempfile.mkdtemp(prefix="hwforge_forkprobe_")
     try:
         for name, text in (("probe.kicad_pcb", _PROBE_PCB),
@@ -346,16 +454,18 @@ def fork_drc_probe(cli):
                     "-o", out, os.path.join(tmp, "probe.kicad_pcb")])
         if not os.path.exists(out):
             return "error", ((proc.stderr or proc.stdout or "").strip()
-                             .splitlines() or ["no report"])[-1]
+                             .splitlines() or ["no report"])[-1], None
         with open(out) as fh:
             report = json.load(fh)
         hit = [v for v in report.get("violations") or []
                if v.get("type") == "connector_edge"]
         if hit:
-            return "fork", hit[0].get("description", "connector_edge fired")
-        return "stock", "no connector_edge violation in the probe report"
+            return ("fork", hit[0].get("description", "connector_edge fired"),
+                    report)
+        return ("stock", "no connector_edge violation in the probe report",
+                report)
     except (OSError, ValueError) as exc:
-        return "error", str(exc)
+        return "error", str(exc), None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -387,11 +497,27 @@ def check_fork_drc(rep, cli):
                  "     rule in the file would stop running with it.")
     else:
         rep.warn("fork DRC rules", "probe did not run: %s" % detail, "")
+    caps = drc_capabilities(cli)
+    if not cli:
+        return
+    have = [name for name, key in (("--severity-override", "severity_override"),
+                                   ("--strict-rules", "strict_rules"),
+                                   ("machine fields", "machine_fields"))
+            if caps[key]]
+    if len(have) == 3:
+        rep.ok("DRC report contract", "%s: kicad_gate.py enforces parity and "
+               "fab severities by override, and tells a bad rule file (exit 8) "
+               "from a load failure (exit 3)" % ", ".join(have))
+    else:
+        rep.ok("DRC report contract", "stock (%s): kicad_gate.py enforces "
+               "severities through the .kicad_pro and scans the rule file "
+               "for keywords this binary drops" % (", ".join(have) or
+                                                    "no fork flags or fields"))
 
 
 # --------------------------------------------------------------- project
 
-def check_project(rep, project_dir, cli):
+def check_project(rep, project_dir, cli, kpy=None):
     """Check one project directory: files, lib tables, generators, venv."""
     if not os.path.isdir(project_dir):
         rep.fail("project dir", "no such directory: %s" % project_dir,
@@ -425,11 +551,13 @@ def check_project(rep, project_dir, cli):
                   + (" ..." if len(kicad_dirs) > 6 else "")))
 
     for directory, name in kicad_dirs:
-        check_lib_tables(rep, directory, name)
+        check_lib_tables(rep, directory, name, cli)
 
     check_models(rep, project_dir, kicad_dirs)
+    check_board_models(rep, kicad_dirs)
     check_rule_files(rep, kicad_dirs, cli)
-    check_generators(rep, project_dir)
+    check_generators(rep, project_dir, kpy)
+    check_makefile(rep, project_dir)
     check_case_env(rep, project_dir)
     return kicad_dirs
 
@@ -462,37 +590,139 @@ def check_rule_files(rep, kicad_dirs, cli):
                      "kicad-cli)")
 
 
-def check_lib_tables(rep, directory, name):
-    """Every library URI in the project's tables must resolve on disk."""
+# KiCad's own path variables, by suffix, and the directory each names under
+# the install's shared-data root.
+_KICAD_VAR = re.compile(r"^KICAD(\d*)_(FOOTPRINT|SYMBOL|3DMODEL|TEMPLATE)_DIR$")
+_VAR_DIRS = {"FOOTPRINT": "footprints", "SYMBOL": "symbols",
+             "3DMODEL": "3dmodels", "TEMPLATE": "template"}
+_VAR_REF = re.compile(r"\$\{([A-Za-z0-9_]+)\}|\$\(([A-Za-z0-9_]+)\)")
+
+
+def kicad_share_dirs(cli=None):
+    """Candidate shared-data roots: KICAD_ROOT, the install kicad-cli is in,
+    the platform defaults."""
+    roots = []
+    bases = [os.environ.get("KICAD_ROOT")] if os.environ.get("KICAD_ROOT") \
+        else []
+    if cli:
+        real = os.path.realpath(cli)
+        bases.append(os.path.dirname(os.path.dirname(real)))   # .../Contents
+        bases.append(os.path.dirname(os.path.dirname(real)))   # .../usr
+    bases += ["/Applications/KiCad/KiCad.app/Contents", "/usr", "/usr/local"]
+    for base in bases:
+        for rel in ("SharedSupport", os.path.join("share", "kicad")):
+            path = os.path.join(base, rel)
+            if os.path.isdir(path) and path not in roots:
+                roots.append(path)
+    return roots
+
+
+def kicad_user_vars(major):
+    """Path variables the user set in KiCad (kicad_common.json), {} if none."""
+    home = os.path.expanduser("~")
+    for base in (os.path.join(home, "Library", "Preferences", "kicad"),
+                 os.path.join(home, ".config", "kicad"),
+                 os.path.join(os.environ.get("APPDATA", ""), "kicad")):
+        path = os.path.join(base, "%d.0" % major, "kicad_common.json")
+        try:
+            with open(path) as fh:
+                return dict(((json.load(fh).get("environment") or {})
+                             .get("vars") or {}))
+        except (OSError, ValueError, AttributeError):
+            continue
+    return {}
+
+
+def resolve_kicad_var(name, cli=None, major=None):
+    """(value, source) for a KiCad path variable, or (None, why)."""
+    if os.environ.get(name):
+        return os.environ[name], "environment"
+    if major:
+        user = kicad_user_vars(major)
+        if user.get(name):
+            return user[name], "kicad_common.json"
+    m = _KICAD_VAR.match(name)
+    if not m:
+        return None, "not a KiCad path variable this check knows"
+    if m.group(1) and major and int(m.group(1)) != major:
+        return None, ("names KiCad %s, and this install is KiCad %d"
+                      % (m.group(1), major))
+    for root in kicad_share_dirs(cli):
+        path = os.path.join(root, _VAR_DIRS[m.group(2)])
+        if os.path.isdir(path):
+            return path, "install"
+    return None, "no %s directory in any KiCad install found" % _VAR_DIRS[
+        m.group(2)]
+
+
+def _cli_major(cli):
+    tup = kicad_version_tuple(cli_version(cli) or "") if cli else ()
+    return tup[0] if tup else None
+
+
+def expand_uri(uri, kiprjmod, cli=None, major=None):
+    """(path, None) with every variable resolved, or (None, var name)."""
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        if name == "KIPRJMOD":
+            return kiprjmod
+        value, _src = resolve_kicad_var(name, cli, major)
+        if value is None:
+            raise KeyError(name)
+        return value
+    try:
+        return _VAR_REF.sub(sub, uri), None
+    except KeyError as exc:
+        return None, exc.args[0]
+
+
+def check_lib_tables(rep, directory, name, cli=None):
+    """Every library URI in the project's tables must resolve on disk.
+
+    A URI that names a variable is resolved first (KIPRJMOD, then KiCad's
+    own path variables); one that still names a variable this check cannot
+    resolve is a warning naming it, because an unresolved URI was never
+    checked and must not count as one that resolves.
+    """
     label = "libs %s" % name
-    missing, total = [], 0
+    missing, unresolved, total = [], {}, 0
+    major = _cli_major(cli)
     for table in ("sym-lib-table", "fp-lib-table"):
         path = os.path.join(directory, table)
         if not os.path.exists(path):
             continue
         with open(path) as fh:
             text = fh.read()
-        import re
         for uri in re.findall(r'\(uri\s+"([^"]+)"\)', text):
             total += 1
-            resolved = uri.replace("${KIPRJMOD}", directory) \
-                          .replace("$(KIPRJMOD)", directory)
-            if "${" in resolved or "$(" in resolved:
-                continue                     # a global var we cannot resolve
-            if not os.path.exists(resolved):
+            resolved, var = expand_uri(uri, directory, cli, major)
+            if resolved is None:
+                unresolved.setdefault(var, []).append(uri)
+            elif not os.path.exists(resolved):
                 missing.append(uri)
     if not total:
         rep.warn(label, "no project library tables",
                  "fix: python3 scripts/kicad_scaffold.py %s %s"
                  % (directory, name))
-    elif missing:
+        return
+    checked = total - sum(len(v) for v in unresolved.values())
+    if missing:
         rep.fail(label, "%d of %d library URI(s) do not resolve: %s"
                  % (len(missing), total, ", ".join(missing[:3])),
                  "fix: generate the libraries, or re-scaffold:\n"
                  "     python3 scripts/kicad_scaffold.py %s %s"
                  % (directory, name))
-    else:
-        rep.ok(label, "%d library URI(s) resolve" % total)
+    elif checked:
+        rep.ok(label, "%d of %d library URI(s) resolve on disk%s"
+               % (checked, total, "" if not unresolved else
+                  "; %d not checked, below" % (total - checked)))
+    for var, uris in sorted(unresolved.items()):
+        rep.warn(label, "%d URI(s) name ${%s}, which this machine does not "
+                 "resolve, so they were not checked: %s"
+                 % (len(uris), var, ", ".join(uris[:2])),
+                 "fix: set %s in KiCad (Preferences > Configure Paths) or "
+                 "the environment,\n     or use a KiCad %s variable"
+                 % (var, major or "10"))
 
 
 # A footprint's 3D model link.  KiCad writes `(model "path" ...)`; the path may
@@ -524,7 +754,7 @@ def model_roots():
     return roots
 
 
-def resolve_model(link, footprint_path, project_dir):
+def resolve_model(link, footprint_path, project_dir, kiprjmod=None):
     """An absolute path for one `(model ...)` link, or None if unresolvable.
 
     `${KIPRJMOD}` is resolved against the directory holding the footprint
@@ -541,7 +771,9 @@ def resolve_model(link, footprint_path, project_dir):
                     if os.path.exists(candidate):
                         return candidate
                 return None
-    lib_dir = os.path.dirname(os.path.dirname(os.path.abspath(footprint_path)))
+    lib_dir = (os.path.abspath(kiprjmod) if kiprjmod else
+               os.path.dirname(os.path.dirname(os.path.abspath(
+                   footprint_path))))
     for anchor in ("${KIPRJMOD}", "$(KIPRJMOD)"):
         if anchor in path:
             for base in (lib_dir, os.path.abspath(project_dir)):
@@ -620,7 +852,110 @@ def check_models(rep, project_dir, kicad_dirs=None):
                  "STEP, not WRL; see references/mechanical.md §7.")
 
 
-def check_generators(rep, project_dir):
+def check_board_models(rep, kicad_dirs):
+    """Every `(model ...)` of a footprint placed on a board must resolve.
+
+    `check_models` reads a project's own footprint libraries; a stock
+    footprint placed from KiCad's library carries its model link into the
+    board file, and that link can name a file no install ships.  Measured:
+    Connector_Wire:SolderWire-* footprints link
+    Connector_Wire.3dshapes/SolderWire-*.step, and KiCad 10.0.5 has no
+    Connector_Wire.3dshapes directory at all.
+    """
+    import kicad_geom
+    for directory, name in kicad_dirs or ():
+        pcb = os.path.join(directory, name + ".kicad_pcb")
+        if not os.path.exists(pcb):
+            continue
+        try:
+            board = kicad_geom.read_board(pcb)
+        except Exception as exc:                       # pragma: no cover
+            rep.warn("3d models %s" % name, "board not read: %s" % exc, "")
+            continue
+        links, missing = 0, []
+        for fp in board["footprints"]:
+            for model in fp.get("models") or ():
+                if model.get("hidden"):
+                    continue
+                links += 1
+                if resolve_model(model["path"], pcb, directory,
+                                 kiprjmod=directory) is None:
+                    missing.append("%s -> %s" % (fp["ref"], model["path"]))
+        label = "3d models %s (placed)" % name
+        if missing:
+            rep.fail(label, "%d of %d model link(s) on the board do not "
+                     "resolve: %s" % (len(missing), links, "; ".join(
+                         missing[:3]) + (" ..." if len(missing) > 3 else "")),
+                     "fix: point the link at a model that exists (vendor a "
+                     "STEP, kicad_fplib.py fork),\n     or drop the link in "
+                     "the board emitter for a part with no body\n     "
+                     "(footprint.Models().clear()); a link to nothing exports "
+                     "no body")
+        elif links:
+            rep.ok(label, "%d model link(s) on the board resolve" % links)
+
+
+# The template Makefile's version line, and the targets a project Makefile
+# copied from an older template is most likely to lack.
+_MAKEFILE_STAMP = re.compile(r"hw_forge Makefile template version:\s*(\d+)")
+
+
+def _template_makefile():
+    return os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "templates", "Makefile")
+
+
+def _phony_targets(text):
+    names = set()
+    for m in re.finditer(r"^\.PHONY:((?:.*\\\n)*.*)$", text, re.M):
+        for word in m.group(1).replace("\\\n", " ").split():
+            if "$" not in word and "(" not in word:
+                names.add(word)
+    return names
+
+
+def check_makefile(rep, project_dir):
+    """A project Makefile copied from the template carries its version line;
+    an older or missing one is a WARN with the diff command."""
+    template = _template_makefile()
+    try:
+        with open(template) as fh:
+            ttext = fh.read()
+    except OSError:
+        return
+    tver = _MAKEFILE_STAMP.search(ttext)
+    tver = int(tver.group(1)) if tver else 0
+    cands = [os.path.join(project_dir, "Makefile"),
+             os.path.join(project_dir, "kicad", "Makefile")]
+    for path in cands:
+        if not os.path.isfile(path):
+            continue
+        with open(path, errors="replace") as fh:
+            text = fh.read()
+        if "kicad_gate.py" not in text and "hw_forge" not in text:
+            continue                         # not a hw_forge project Makefile
+        got = _MAKEFILE_STAMP.search(text)
+        pver = int(got.group(1)) if got else None
+        lacking = sorted(_phony_targets(ttext) - _phony_targets(text))
+        label = "Makefile"
+        fix = "diff: diff -u %s %s" % (path, template)
+        if pver is None or pver < tver:
+            rep.warn(label, "%s is %s; the shipped template is version %d%s"
+                     % (path, "unstamped (copied before stamps existed)"
+                        if pver is None else "template version %d" % pver,
+                        tver, "; lacks target(s): %s" % ", ".join(lacking[:8])
+                        if lacking else ""),
+                     fix + "\nfix: merge the template's generic half (below "
+                     "the project configuration block)")
+        elif lacking:
+            rep.warn(label, "%s is template version %d but lacks target(s): "
+                     "%s" % (path, pver, ", ".join(lacking[:8])), fix)
+        else:
+            rep.ok(label, "%s matches template version %d" % (path, tver))
+        return
+
+
+def check_generators(rep, project_dir, kpy=None):
     """A generator that will not import cannot be debugged from a DRC report."""
     candidates = []
     for pattern in ("design*.py", "gen_*.py", "*/design*.py", "*/gen_*.py"):
@@ -640,20 +975,34 @@ def check_generators(rep, project_dir):
     # runs on system python, the board emitter on KiCad's.
     designs = [p for p in candidates
                if os.path.basename(p).startswith("design")]
+    code = ("import sys, importlib.util as u;"
+            "s=u.spec_from_file_location('d', %r);"
+            "m=u.module_from_spec(s);s.loader.exec_module(m)")
+    pythons = [("system python", sys.executable)]
+    if kpy:
+        pythons.append(("KiCad python", kpy))
     for path in designs:
-        proc = run([sys.executable, "-c",
-                    "import sys, importlib.util as u;"
-                    "s=u.spec_from_file_location('d', %r);"
-                    "m=u.module_from_spec(s);s.loader.exec_module(m)" % path])
-        if proc.returncode != 0:
-            detail = (proc.stderr or "").strip().splitlines()
-            rep.fail("import %s" % os.path.basename(path),
-                     detail[-1] if detail else "import failed",
-                     "fix: the logical design must import cleanly under "
-                     "system python (it is shared by both emitters)")
+        label = "import %s" % os.path.relpath(path, project_dir)
+        bad, good = [], []
+        for what, py in pythons:
+            proc = run([py, "-c", code % path])
+            if proc.returncode != 0:
+                detail = (proc.stderr or "").strip().splitlines()
+                bad.append("%s (%s): %s" % (what, py, detail[-1] if detail
+                                            else "import failed"))
+            else:
+                good.append(what)
+        if bad:
+            rep.fail(label, "; ".join(bad),
+                     "fix: the logical design must import cleanly under both "
+                     "interpreters\n     (the schematic emitter runs on the "
+                     "system python, the board emitter on KiCad's)")
+        elif kpy:
+            rep.ok(label, "imports under %s" % " and ".join(good))
         else:
-            rep.ok("import %s" % os.path.basename(path),
-                   "imports under system python")
+            rep.warn(label, "imports under the system python; not checked "
+                     "under KiCad's (none found)",
+                     "fix: install KiCad 10, or set KICAD_PYTHON")
 
 
 def check_case_env(rep, project_dir):
@@ -854,7 +1203,7 @@ def main():
 
     kicad_dirs = None
     if args.project:
-        kicad_dirs = check_project(rep, args.project, cli)
+        kicad_dirs = check_project(rep, args.project, cli, kpy)
     if args.smoke:
         if not args.project:
             rep.fail("smoke test", "--smoke needs --project",

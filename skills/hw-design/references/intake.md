@@ -157,6 +157,16 @@ The constraints that apply to the whole board, not to one part. These become
   handled by an external charger only? `[no default, must answer whenever
   Q3.8 names a battery; this is a stated tier-3, safety-relevant item in the
   escalation ladder regardless of how it is answered]`
+- **Q3.12** For every interface in Q3.9: what is on the far end? The receiver's
+  input impedance, the cable length and capacitance per metre, and the far end's
+  supply and ground reference (shared, floating, or isolated).
+  `[default: state the assumption in design.py as a named constant and flag it
+  for confirmation]`. Ask it per interface, not once for the board. A
+  design with an unstated far end still passes every gate: the mic run's
+  `design.py` had to assume a 10 kohm minimum receiver input impedance
+  (`HUB_ZIN_MIN`) and could not size the cable-capacitance check in
+  `domains.md` 1.7, because neither value was asked
+  (`hypercardiod_mic/GAPS.md` #11).
 
 ### 2.4 Anything else needed to intuit design decisions later
 

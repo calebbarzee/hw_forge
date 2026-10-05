@@ -88,6 +88,11 @@ inline and what to delegate, writes the agent prompts, runs the waves, and
 re-verifies each gate before opening the next phase. Use it for new boards and
 for structural changes to existing ones.
 
+Run the skill as the top-level session. When a run must be delegated, the
+delegate dispatches phase agents in the foreground, one wave at a time. A
+subagent is ended when its turn ends, before background agents it started can
+report.
+
 Spec lock is an intake, not a summary. The skill asks a question bank in one
 batch, covering the device's objective, where each part goes and what the user
 touches, the rules the board must follow, and the package of every part that is

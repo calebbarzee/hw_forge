@@ -266,7 +266,7 @@ kb/
 ├── fabs/                      per-fab capability floors and their KiCad DRC encodings
 ├── interfaces/                per connector family: stock footprints, mating_direction, plug envelope, panel opening
 ├── keyboards/                 the keyboard domain (parts, firmware, geometry, libraries)
-├── parts/                     package-family traps that are not tied to one domain
+├── parts/                     part-level cards not tied to one domain: package-family traps, capsule geometry, footprint polarity and height traps
 ├── runs/                      harvested outside runs and measured tool runs, one card each
 └── projects/                  per-project pointer cards: what it is, gate state, where its docs live
 ```

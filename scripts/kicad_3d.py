@@ -71,7 +71,12 @@ A fourth subcommand, and the function behind it
 a part a height when `design.py` does not declare one.  The sweep over every
 3D `CARTESIAN_POINT` that is wrong for an assembly export (above) is right for
 a single-part model file, because nothing in that file is placed by a transform
-chain.  A model file that is itself an assembly (it carries a
+chain, for its z band.  Its x and y are not a plan box: the sweep includes
+curve placement points and B-spline control points, which sit off the
+surface (measured: Capacitor_THT C_Radial_D5.0mm_H11.0mm_P2.00mm.step, a 5 mm
+can, sweeps x -4.05..6.05 and y -5.05..5.05, 10.1 x 10.1 mm; its z,
+-2.0..11.0, is right).  `extent` prints z as the result and labels x and y
+as not a bounding box.  A model file that is itself an assembly (it carries a
 `NEXT_ASSEMBLY_USAGE_OCCURRENCE`, which is how a code-CAD compound exports)
 has each child's points carried through its placement first; one whose chain
 cannot be read is reported as such and given no extent, rather than a
@@ -639,10 +644,14 @@ def cmd_extent(args):
         print(json.dumps({"extent": extent, "z_band": band}, indent=2))
         return 0
     print("%s" % args.step)
-    print("  model bbox  x %.3f..%.3f  y %.3f..%.3f  z %.3f..%.3f  (%d points)"
+    print("  model z     %.3f..%.3f  (%d points)"
+          % (extent["min"][2], extent["max"][2], extent["points"]))
+    print("  model x, y  %.3f..%.3f, %.3f..%.3f  NOT a plan bounding box: "
+          "the sweep includes curve placement and control points (a 5 mm "
+          "radial can reads 10.1 x 10.1 mm); read plan size from the "
+          "footprint's Fab layer"
           % (extent["min"][0], extent["max"][0], extent["min"][1],
-             extent["max"][1], extent["min"][2], extent["max"][2],
-             extent["points"]))
+             extent["max"][1]))
     print("  placed z    %.3f..%.3f above the mounting face%s"
           % (band[0], band[1], "" if rotation_is_sign_proof(args.rotate)
              else "  (x/y rotation not a multiple of 180: sign-dependent)"))

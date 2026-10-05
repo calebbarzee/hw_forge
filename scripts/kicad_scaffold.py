@@ -18,6 +18,23 @@ here is KiCad's design rule check:
     python3 scripts/kicad_scaffold.py build/left --repatch
     python3 scripts/kicad_scaffold.py build/left --repatch \\
         --severity npth_inside_courtyard=warning     # adds it to the sidecar
+    python3 scripts/kicad_scaffold.py build/left boardname \\
+        --stock-fp-lib Resistor_THT --stock-sym-lib Device
+
+Library tables.  A table is written only when a flag (--sym-lib, --fp-lib,
+--stock-sym-lib, --stock-fp-lib) or a lib/ library supplies rows for it, or
+when no table exists yet (an empty one).  An existing table with nothing to
+replace it is left untouched, so a hand-added row survives the scaffolder
+run every `make <target>` performs.  A `--stock-*-lib NAME` row points at
+KiCad's own library through ${KICAD<major>_FOOTPRINT_DIR} or
+${KICAD<major>_SYMBOL_DIR} (major from this kicad-cli, default 10) and is
+described "KiCad stock library"; a project row is described "<name> project
+footprints" or "<name> project symbols".
+
+The project file.  An existing NAME.kicad_pro is merged into, not replaced:
+the design rules, severities, net classes and file name this script owns
+are written over what is there, and every other key (text variables, board
+setup KiCad added, sheet lists) is kept.
 
 Evolving the override set.  `--repatch` restores what the sidecar holds, so
 adding a demotion to a project's scaffolder flags and then only ever running
@@ -229,6 +246,32 @@ SYM_TABLE_HEADER = "(sym_lib_table\n  (version 7)\n"
 FP_TABLE_HEADER = "(fp_lib_table\n  (version 7)\n"
 LIB_ROW = ('  (lib (name "%s")(type "KiCad")(uri "%s")(options "")'
            '(descr "%s"))\n')
+STOCK_DESCR = "KiCad stock library"
+DEFAULT_MAJOR = 10
+
+
+def kicad_major():
+    """The major version of the kicad-cli in use, or DEFAULT_MAJOR."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        from _kicad_env import cli_version, find_cli, kicad_version_tuple
+        cli, _how = find_cli()
+        tup = kicad_version_tuple(cli_version(cli) or "") if cli else ()
+        return tup[0] if tup else DEFAULT_MAJOR
+    except Exception:                                  # pragma: no cover
+        return DEFAULT_MAJOR
+
+
+def stock_rows(names, kind, major=None):
+    """[(name, uri)] for KiCad stock libraries: kind "fp" or "sym"."""
+    major = major or kicad_major()
+    if kind == "fp":
+        return [(n, "${KICAD%d_FOOTPRINT_DIR}/%s.pretty" % (major, n))
+                for n in names]
+    return [(n, "${KICAD%d_SYMBOL_DIR}/%s.kicad_sym" % (major, n))
+            for n in names]
 
 
 # ------------------------------------------------------------------ libraries
@@ -261,7 +304,8 @@ def discover_libs(project_dir):
 def write_lib_table(path, header, rows, descr):
     body = header
     for name, uri in rows:
-        body += LIB_ROW % (name, uri, descr % name)
+        stock = uri.startswith(("${KICAD", "$(KICAD"))
+        body += LIB_ROW % (name, uri, STOCK_DESCR if stock else descr % name)
     body += ")\n"
     with open(path, "w") as fh:
         fh.write(body)
@@ -533,9 +577,37 @@ def install_rules(project_dir, name, fork=False, quiet=False,
     return path
 
 
+def merge_project(pro_path, name, rules, net_class, severities):
+    """The .kicad_pro to write: the existing file with this script's keys
+    set, or a minimal one when there is none."""
+    fresh = project_doc(name, rules, net_class, severities)
+    try:
+        with open(pro_path) as fh:
+            pro = json.load(fh)
+    except (OSError, ValueError):
+        return fresh, False
+    design = pro.setdefault("board", {}).setdefault("design_settings", {})
+    design.setdefault("rules", {}).update(rules)
+    design.setdefault("rule_severities", {}).update(severities)
+    design.setdefault("defaults", {}).setdefault(
+        "board_outline_line_width", 0.1)
+    # setdefault first: the right-hand side reads net_settings, and a
+    # .kicad_pro without that key must not raise KeyError.
+    nets = pro.setdefault("net_settings", {})
+    nets["classes"] = [net_class] + [
+        c for c in (nets.get("classes") or [])
+        if c.get("name") != net_class.get("name")]
+    pro.setdefault("meta", {})["filename"] = name + ".kicad_pro"
+    pro["meta"].setdefault("version", 1)
+    pro.setdefault("sheets", fresh["sheets"])
+    pro.setdefault("text_variables", {})
+    return pro, True
+
+
 def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
              sym_libs=None, fp_libs=None, quiet=False, fork_rules=False,
-             custom_rules=True, reinstall_rules=False):
+             custom_rules=True, reinstall_rules=False, stock_sym=None,
+             stock_fp=None):
     os.makedirs(project_dir, exist_ok=True)
     # Rules first: an unterminated fork block then stops before anything
     # else is written.
@@ -556,17 +628,28 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
     merged_net.update(net_class or {})
 
     found_syms, found_fps = discover_libs(project_dir)
-    syms = sym_libs if sym_libs else found_syms
-    fps = fp_libs if fp_libs else found_fps
-    n_sym = write_lib_table(os.path.join(project_dir, "sym-lib-table"),
-                            SYM_TABLE_HEADER, syms, "%s project symbols")
-    n_fp = write_lib_table(os.path.join(project_dir, "fp-lib-table"),
-                           FP_TABLE_HEADER, fps, "%s project footprints")
+    major = kicad_major() if (stock_sym or stock_fp) else DEFAULT_MAJOR
+    syms = (list(sym_libs or found_syms)
+            + stock_rows(stock_sym or (), "sym", major))
+    fps = (list(fp_libs or found_fps)
+           + stock_rows(stock_fp or (), "fp", major))
+    tables = []
+    for fname, header, rows, descr in (
+            ("sym-lib-table", SYM_TABLE_HEADER, syms, "%s project symbols"),
+            ("fp-lib-table", FP_TABLE_HEADER, fps, "%s project footprints")):
+        path = os.path.join(project_dir, fname)
+        if rows or not os.path.exists(path):
+            write_lib_table(path, header, rows, descr)
+            tables.append("%s: %d row(s) written" % (fname, len(rows)))
+        else:
+            tables.append("%s: kept (no flag or lib/ library supplies rows)"
+                          % fname)
 
     pro_path = os.path.join(project_dir, name + ".kicad_pro")
+    pro, merged = merge_project(pro_path, name, merged_rules, merged_net,
+                                severities)
     with open(pro_path, "w") as fh:
-        json.dump(project_doc(name, merged_rules, merged_net, severities),
-                  fh, indent=2)
+        json.dump(pro, fh, indent=2)
 
     # Written even when empty: its presence is the signal to a generator that
     # `repatch()` is the project's convention, and it is where the next
@@ -586,9 +669,10 @@ def scaffold(project_dir, name, severities=None, rules=None, net_class=None,
                                  "rules": merged_rules,
                                  "net_classes": [merged_net]})
     if not quiet:
-        print("scaffolded %s (%s): %d symbol lib(s), %d footprint lib(s), "
-              "%d severity override(s)" % (project_dir, name, n_sym, n_fp,
-                                           len(severities)))
+        print("scaffolded %s (%s): %s; %s %s; %d severity override(s)"
+              % (project_dir, name, "; ".join(tables),
+                 "merged into" if merged else "wrote",
+                 os.path.basename(pro_path), len(severities)))
         if severities:
             for rule, level in sorted(severities.items()):
                 print("  severity  %s -> %s%s"
@@ -631,6 +715,14 @@ def main():
                     help="symbol library row (default: discover ../lib)")
     ap.add_argument("--fp-lib", action="append", metavar="NAME=URI",
                     help="footprint library row (default: discover ../lib)")
+    ap.add_argument("--stock-sym-lib", action="append", metavar="NAME",
+                    help="a KiCad stock symbol library row, URI "
+                         "${KICAD<major>_SYMBOL_DIR}/NAME.kicad_sym "
+                         "(repeatable)")
+    ap.add_argument("--stock-fp-lib", action="append", metavar="NAME",
+                    help="a KiCad stock footprint library row, URI "
+                         "${KICAD<major>_FOOTPRINT_DIR}/NAME.pretty "
+                         "(repeatable)")
     ap.add_argument("--fork-rules", action="store_true",
                     help="insert templates/drc-fork.kicad_dru as a marked "
                          "block in NAME.kicad_dru when the kicad-cli in use "
@@ -683,7 +775,8 @@ def main():
              sym_libs=list(parse_pairs(args.sym_lib).items()) or None,
              fp_libs=list(parse_pairs(args.fp_lib).items()) or None,
              fork_rules=args.fork_rules, custom_rules=not args.no_rules,
-             reinstall_rules=args.reinstall_rules)
+             reinstall_rules=args.reinstall_rules,
+             stock_sym=args.stock_sym_lib, stock_fp=args.stock_fp_lib)
 
 
 if __name__ == "__main__":

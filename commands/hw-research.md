@@ -74,10 +74,13 @@ Three doctrine rules apply here; `agents/resource-scout.md` carries them in full
 - **Report conflicts on any two-source fact**, not just pin tables. Two secondary
   sources disagreeing on a mechanical number costs a case redesign; it still gets
   reported with both tiers named rather than decided by preference.
-- **When the primary source is an image** (the pin table published only as a PNG,
-  which no tool here can read), two independently-authored derived assets that
-  both cite that image are the accepted fallback. That they were never checked
-  against the primary is flagged inline in the provenance row and the report.
+- **When the primary source is an image** (the pin table published only as a PNG
+  or a PDF figure), read it: the Read tool displays PNG and JPEG, and `pdftoppm`
+  renders a PDF page to PNG at a chosen dpi. A dimension scaled off the raster
+  carries a stated tolerance. When no image is available, two
+  independently-authored derived assets that both cite that image are the
+  accepted fallback. That they were never checked against the primary is
+  flagged inline in the provenance row and the report.
 
 ## 3a. Close a footprint finding in the library
 

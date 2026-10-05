@@ -36,6 +36,17 @@ a build gate rather than a habit.
 Run both against a `--severity-all` report, not the gate's error-only one:
 warnings are the whole point.
 
+Reports from the forked kicad-cli carry per-violation `rule`, `rule_source`,
+`constraint`, `actual` and `required`, and a per-item `reference`.  Then a
+measured finding prints under its section line, and each `--by-owner` class
+shows its worst one:
+
+    clearance 0.1801 mm < 0.2 mm (rule default)  R2
+
+and owners come from `reference` instead of the item description.  A stock
+report is read as before.  Both paths give the same owner set for the same
+board, so `--baseline` compares a stock report with a fork one.
+
 Exit status is 0 unless --strict is given.  Under --strict, any error-severity
 violation exits 1, as does any new finding class when --baseline is given.
 The default status is silent by design: the gate script already owns the exit
@@ -68,7 +79,8 @@ def sections(doc):
 
 
 def show(label, items, indent="  "):
-    """Print one line; return the number of error-severity violations."""
+    """Print one line, then the measured findings under it (fork reports
+    only); return the number of error-severity violations."""
     errs = [v for v in items if v.get("severity") == "error"]
     if not items:
         print("%s%-11s ok" % (indent, label))
@@ -77,7 +89,64 @@ def show(label, items, indent="  "):
     print("%s%-11s %s  %s" % (indent, label, "FAIL" if errs else "warn",
                               ", ".join("%s x%d" % (t, n)
                                         for t, n in counts.most_common())))
+    show_measured(items, indent + " " * 12)
     return len(errs)
+
+
+# ------------------------------------------------------------- measurements
+#
+# The forked kicad-cli adds `rule`, `rule_source`, `constraint`, `actual` and
+# `required` to every violation (fork: tools/ai_pipeline/docs/reports.md,
+# resources/schemas/drc.v1.json).  A stock report has none of them, and a
+# check without numbers (parity, isolated copper) writes null, so every line
+# below is printed only for a violation that carries both measures.
+
+MAX_MEASURED = 10           # distinct lines per section before "... more"
+
+
+def fmt_measure(measure):
+    """{"value": 0.180097, "unit": "mm"} -> '0.1801 mm'."""
+    unit = measure.get("unit") or ""
+    text = "%.4g" % measure.get("value")
+    return text if unit in ("", "count") else "%s %s" % (text, unit)
+
+
+def measured(violation):
+    """'clearance 0.1801 mm < 0.2 mm (rule board_setup)', or None."""
+    actual, required = violation.get("actual"), violation.get("required")
+    if not (isinstance(actual, dict) and isinstance(required, dict)):
+        return None
+    try:
+        a, r = float(actual["value"]), float(required["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    source = violation.get("rule_source")
+    rule = violation.get("rule")
+    # A custom or net-class rule's name says which rule; for the others the
+    # source is the more useful word ("board setup constraints hole" names
+    # no file anyone edits).
+    name = rule if rule and source in ("custom", "netclass", None) else source
+    return "%s %s %s %s%s" % (
+        violation.get("constraint") or violation.get("type", "?"),
+        fmt_measure(actual), "<" if a < r else ">" if a > r else "=",
+        fmt_measure(required), " (rule %s)" % name if name else "")
+
+
+def show_measured(items, indent):
+    """One line per distinct measured finding, with its owners and count."""
+    lines = collections.Counter()
+    for violation in items:
+        text = measured(violation)
+        if text:
+            owners = "+".join(sorted({ref for item in violation.get("items", [])
+                                      for ref in owners_of(item)}))
+            lines[text + ("  " + owners if owners else "")] += 1
+    ranked = sorted(lines.items(), key=lambda kv: (-kv[1], kv[0]))
+    for text, n in ranked[:MAX_MEASURED]:
+        print("%s%s%s" % (indent, text, "  x%d" % n if n > 1 else ""))
+    if len(lines) > MAX_MEASURED:
+        print("%s... %d more measured; report.py --by-owner lists every class"
+              % (indent, len(lines) - MAX_MEASURED))
 
 
 def summarise(path, indent="  "):
@@ -102,8 +171,21 @@ OWNER_PATTERNS = (re.compile(r"\bof (%s)\b" % REF),
                              % REF))
 
 
+#
+# A fork report names the owner directly, in the item's `reference` (null,
+# never missing, when no footprint or symbol owns the item).  It is used when
+# the key is present, filtered through the same REF shape, so that a stock and
+# a fork report of one board give the same owner sets and `--baseline` can
+# compare them: a power symbol's "#PWR01" is not an owner on either path.
+
+REF_ONLY = re.compile(r"^%s$" % REF)
+
+
 def owners_of(item):
     """The refdes(es) one violation item names, as a sorted list."""
+    if "reference" in item:
+        ref = item.get("reference") or ""
+        return [ref] if REF_ONLY.match(ref) else []
     text = NET_BRACKET.sub("", item.get("description") or "").strip()
     found = []
     for pattern in OWNER_PATTERNS:
@@ -119,27 +201,53 @@ def classes(doc):
     MCU1" is the claim a demotion rests on.
     """
     out = collections.OrderedDict()
+    for key, violation in keyed(doc):
+        out.setdefault(key, []).append(violation.get("severity", "?"))
+    return out
+
+
+def keyed(doc):
+    """[(class_key, violation), ...] in report order."""
+    out = []
     for label, items in sections(doc):
         for violation in items:
             refs = sorted({ref for item in violation.get("items", [])
                            for ref in owners_of(item)})
-            key = (label, violation.get("type", "?"),
-                   "+".join(refs) or "(no ref named)")
-            out.setdefault(key, []).append(violation.get("severity", "?"))
+            out.append(((label, violation.get("type", "?"),
+                         "+".join(refs) or "(no ref named)"), violation))
     return out
 
 
+def worst_measured(violations):
+    """The measured line of the finding furthest past its limit, or ''."""
+    best, text = -1.0, ""
+    for violation in violations:
+        line = measured(violation)
+        if line:
+            gap = abs(float(violation["actual"]["value"])
+                      - float(violation["required"]["value"]))
+            if gap > best:
+                best, text = gap, line
+    return text
+
+
 def show_by_owner(doc, indent="  "):
-    """Print one line per finding class. Returns the class dict."""
+    """Print one line per finding class, with its worst measured finding
+    when the report carries measurements. Returns the class dict."""
     found = classes(doc)
     if not found:
         print("%sno findings in any section" % indent)
         return found
+    members = collections.defaultdict(list)
+    for key, violation in keyed(doc):
+        members[key].append(violation)
     width = max(len(k[1]) for k in found)
     for (label, vtype, owners), sevs in sorted(found.items()):
         worst = "error" if "error" in sevs else sorted(set(sevs))[0]
-        print("%s%-11s %-*s x%-4d %-7s %s"
-              % (indent, label, width, vtype, len(sevs), worst, owners))
+        detail = worst_measured(members[(label, vtype, owners)])
+        print("%s%-11s %-*s x%-4d %-7s %s%s"
+              % (indent, label, width, vtype, len(sevs), worst, owners,
+                 "  worst: " + detail if detail else ""))
     return found
 
 

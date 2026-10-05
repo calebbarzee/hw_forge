@@ -72,7 +72,9 @@ and you say so in your report.
 The suite calls the five contract-driven checks on the real shells, with the
 generator's one frame helper as `frame` (`case_verify.py` docstring):
 `board_in_cavity`, `cavity_clearance`, `connector_openings`, `min_wall`, and
-`fastener_stackup`. Each exemption carries its reason in the call, and the
+`fastener_stackup`. For `connector_openings`, pass `datums={name: (X, Y, Z)}`
+for every `offboard` record's datum, and `frame=` so the pigtail length is
+checked. Each exemption carries its reason in the call, and the
 reason prints as its own line. `hw_review.py` runs this suite in the
 pre-order table, with the contract it just built.
 

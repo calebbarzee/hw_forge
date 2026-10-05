@@ -34,19 +34,43 @@ PARTS row leaves unset (kicad_geom.FIT_FIELDS).
 
 Definitions
 -----------
-`scripts/interfaces.schema.json` is the format.  Definitions load from
-`scripts/interfaces/*.json`, and from any fenced ```json block whose object
-has `"schema": "hw_forge.interface"` inside a `kb/interfaces/*.md` card under
-every knowledge-base root (`HW_FORGE_KB_ROOTS`).  An exact id match wins over
-an alias.  The rule ids are those of `references/interfaces.md`'s tables, so a
-FAIL line names the rule a human can read up.
+`scripts/interfaces.schema.json` is the format.  Definitions load, in this
+order, from:
+
+  1. `scripts/interfaces/*.json`;
+  2. any fenced ```json block whose object has `"schema":
+     "hw_forge.interface"` inside a `kb/interfaces/*.md` card under every
+     knowledge-base root (the plugin's `kb/`, then `HW_FORGE_KB_ROOTS`);
+  3. the project's own, with no environment variable: `PROJECT/interfaces/
+     *.json` and `PROJECT/kb/interfaces/*.md` blocks, where PROJECT is the
+     directory of the schematic, of --design, or of --project, and up to two
+     directories above each (so a schematic in PROJECT/kicad/ finds
+     PROJECT/kb/).
+
+The first definition of an id wins, and a later one with the same id is a
+definition problem (printed as WARN, naming both files).  An exact id match
+wins over an alias.  The rule ids are those of `references/interfaces.md`'s
+tables, so a FAIL line names the rule a human can read up.
+
+Rule kinds are listed in the schema.  `part_to_net` is the one for a part
+between a connector pin and a net that is neither ground nor another role:
+an electret load resistor from the capsule pad to a bias rail, a series
+build-out resistor or coupling capacitor between an output pad and the
+amplifier.  `to_net` (a regex on the net name) names the far net; without it
+any net that is not ground and not a role's net counts.  `count` makes it
+exact (`count: 0` means none), `value_ohms` / `value_farads` with `tolerance`
+bound the value.  A part counts once however many of its pins reach a far
+net.  A rule with no `prefixes` counts only passives (PASSIVE_PREFIXES: R, C,
+L, D, FB), never an IC or connector pin that happens to share the net.
 
 The netlist is `kicad-cli sch export netlist --format kicadsexpr`, found
 through `_kicad_env.py`.  Pins match a role by pad number or by symbol pin
 name (the netlist's `pinfunction`).  A pin counts as connected only when its
 net reaches a node of another reference: a net made only of this part's own
 pads (a shell strapped to a shield pad, or KiCad's single-node
-`unconnected-(...)`) is not connected.
+`unconnected-(...)`) is not connected.  A part marked do-not-populate (the
+netlist's `dnp` property) is not fitted, so it is dropped from every rule,
+as kicad_schrules.py does; a declared connector that is DNP is reported SKIP.
 
 Output is one block per connector with one line per rule: PASS, FAIL, WARN,
 SKIP, EXEMPT or MANUAL.  Exit 1 on any FAIL.  A declared interface with no
@@ -74,6 +98,8 @@ from _kicad_env import find_cli, run                         # noqa: E402
 
 SCHEMA = "hw_forge.interface"
 DEFAULT_GROUND = r"^(gnd|vss|0v|agnd|dgnd|pgnd|gnd_.*|.*_gnd)$"
+# The parts a rule with no `prefixes` counts: passives only.
+PASSIVE_PREFIXES = ("R", "C", "L", "D", "FB")
 _FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 
 
@@ -84,6 +110,28 @@ def kb_roots():
     roots += [r for r in os.environ.get("HW_FORGE_KB_ROOTS", "").split(":")
               if r]
     return roots
+
+
+def project_roots(*anchors):
+    """Directories that may hold a project's interfaces/ or kb/interfaces/:
+    each anchor (a file or a directory) and up to two directories above it,
+    nearest first, the plugin's own tree excluded."""
+    plugin = os.path.dirname(HERE)
+    out = []
+    for anchor in anchors:
+        if not anchor:
+            continue
+        here = os.path.abspath(anchor)
+        if not os.path.isdir(here):
+            here = os.path.dirname(here)
+        for _ in range(3):
+            if here not in out and here != plugin:
+                out.append(here)
+            parent = os.path.dirname(here)
+            if parent == here:
+                break
+            here = parent
+    return out
 
 
 def validate(defn, where):
@@ -112,30 +160,55 @@ def validate(defn, where):
         if to and to != "ground" and to not in roles:
             out.append("%s: rule %s to_role %r undefined"
                        % (where, rule.get("id"), to))
+        if rule.get("to_net"):
+            try:
+                re.compile(rule["to_net"])
+            except re.error as exc:
+                out.append("%s: rule %s to_net is not a regex: %s"
+                           % (where, rule.get("id"), exc))
     return out
 
 
-def load_definitions():
-    """({id: definition}, {alias: id}, [problems])."""
-    found, problems = [], []
-    for path in sorted(glob.glob(os.path.join(HERE, "interfaces", "*.json"))):
+def _json_files(directory, found, problems):
+    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
         try:
             with open(path) as fh:
                 found.append((json.load(fh), path))
         except ValueError as exc:
             problems.append("%s: %s" % (path, exc))
+
+
+def _md_blocks(directory, found):
+    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+        with open(path, errors="replace") as fh:
+            text = fh.read()
+        for block in _FENCE.findall(text):
+            try:
+                obj = json.loads(block)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("schema") == SCHEMA:
+                found.append((obj, path))
+
+
+def load_definitions(projects=()):
+    """({id: definition}, {alias: id}, [problems]).
+
+    `projects` are project roots (project_roots()); their interfaces/*.json
+    and kb/interfaces/*.md load after the shipped and knowledge-base ones.
+    """
+    found, problems = [], []
+    _json_files(os.path.join(HERE, "interfaces"), found, problems)
+    seen_dirs = set()
     for root in kb_roots():
-        for path in sorted(glob.glob(os.path.join(root, "interfaces",
-                                                  "*.md"))):
-            with open(path, errors="replace") as fh:
-                text = fh.read()
-            for block in _FENCE.findall(text):
-                try:
-                    obj = json.loads(block)
-                except ValueError:
-                    continue
-                if isinstance(obj, dict) and obj.get("schema") == SCHEMA:
-                    found.append((obj, path))
+        seen_dirs.add(os.path.abspath(os.path.join(root, "interfaces")))
+        _md_blocks(os.path.join(root, "interfaces"), found)
+    for root in projects:
+        _json_files(os.path.join(root, "interfaces"), found, problems)
+        kdir = os.path.abspath(os.path.join(root, "kb", "interfaces"))
+        if kdir not in seen_dirs:
+            seen_dirs.add(kdir)
+            _md_blocks(kdir, found)
     defs, aliases = {}, {}
     for defn, path in found:
         bad = validate(defn, path)
@@ -143,7 +216,13 @@ def load_definitions():
             problems += bad
             continue
         defn["_path"] = path
-        defs.setdefault(defn["id"], defn)
+        if defn["id"] in defs:
+            if defs[defn["id"]]["_path"] != path:
+                problems.append("%s: id %r already defined in %s; the first "
+                                "definition is used"
+                                % (path, defn["id"], defs[defn["id"]]["_path"]))
+            continue
+        defs[defn["id"]] = defn
         for alias in defn.get("aliases") or ():
             aliases.setdefault(alias.lower(), defn["id"])
     return defs, aliases, problems
@@ -173,17 +252,34 @@ def export_netlist(sch, out_path):
     return out_path
 
 
+def _is_dnp(comp):
+    """True when a netlist comp carries (property (name "dnp")), unless its
+    value says no, as kicad_schrules.py reads it."""
+    for prop in kicad_geom.kids(comp, "property"):
+        name = kicad_geom.kid(prop, "name")
+        if name and len(name) > 1 and str(name[1]).lower() == "dnp":
+            value = kicad_geom.kid(prop, "value")
+            text = str(value[1]).lower() if value and len(value) > 1 else ""
+            return text not in ("no", "false", "0")
+    return False
+
+
 def read_netlist(path):
     """{'values': {ref: value}, 'pins': {ref: [(pin, name, net)]},
-    'nodes': {net: [(ref, pin)]}}."""
+    'nodes': {net: [(ref, pin)]}, 'dnp': {ref: value}}.
+
+    Do-not-populate parts are kept only in 'dnp': they are absent from
+    'values', 'pins' and every net's nodes, so no rule can count them.
+    """
     root = kicad_geom.parse_file(path)
-    values = {}
+    values, dnp = {}, {}
     comps = kicad_geom.kid(root, "components")
     for comp in kicad_geom.kids(comps, "comp") if comps else []:
         ref = kicad_geom.kid(comp, "ref")
         val = kicad_geom.kid(comp, "value")
         if ref:
-            values[ref[1]] = val[1] if val and len(val) > 1 else ""
+            (dnp if _is_dnp(comp) else values)[ref[1]] = (
+                val[1] if val and len(val) > 1 else "")
     pins, nodes = {}, {}
     nets = kicad_geom.kid(root, "nets")
     for net in kicad_geom.kids(nets, "net") if nets else []:
@@ -191,12 +287,15 @@ def read_netlist(path):
         net_name = name[1] if name and len(name) > 1 else ""
         for node in kicad_geom.kids(net, "node"):
             ref = (kicad_geom.kid(node, "ref") or [None, ""])[1]
+            if ref in dnp:
+                continue
             pin = (kicad_geom.kid(node, "pin") or [None, ""])[1]
             func = kicad_geom.kid(node, "pinfunction")
             pins.setdefault(ref, []).append(
                 (pin, func[1] if func and len(func) > 1 else "", net_name))
             nodes.setdefault(net_name, []).append((ref, pin))
-    return {"values": values, "pins": pins, "nodes": nodes}
+        nodes.setdefault(net_name, [])
+    return {"values": values, "pins": pins, "nodes": nodes, "dnp": dnp}
 
 
 _SI = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "m": 1e-3, "": 1.0,
@@ -258,17 +357,31 @@ class Ctx(object):
         return set(self.nets(to)) if to else set()
 
     def parts_between(self, net, targets, prefixes):
-        """[(ref, value)] of parts with a pin on `net` and one on `targets`."""
+        """[(ref, value, far nets)] of fitted parts with a pin on `net` and
+        one on `targets`, one entry per part.  No `prefixes` means passives
+        only (PASSIVE_PREFIXES)."""
         out = []
+        allowed = [p.upper() for p in (prefixes or PASSIVE_PREFIXES)]
         on_net = {r for r, _ in self.net["nodes"].get(net, [])
                   if r != self.ref}
         for ref in sorted(on_net):
-            if prefixes and prefix(ref) not in [p.upper() for p in prefixes]:
+            if prefix(ref) not in allowed:
                 continue
-            others = {n for _, _, n in self.net["pins"].get(ref, [])
-                      if n != net}
-            if others & targets:
-                out.append((ref, self.net["values"].get(ref, "")))
+            far = sorted({n for _, _, n in self.net["pins"].get(ref, [])
+                          if n != net} & targets)
+            if far:
+                out.append((ref, self.net["values"].get(ref, ""), far))
+        return out
+
+    def parts_from_role(self, role, targets, prefixes):
+        """parts_between over every net of `role`, each part once."""
+        seen, out = set(), []
+        for net in self.nets(role):
+            for ref, val, far in self.parts_between(net, targets - {net},
+                                                    prefixes):
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append((ref, val, far))
         return out
 
 
@@ -345,35 +458,78 @@ def r_passive(c, rule, mode="passive_to"):
         if not nets:
             out.append(("FAIL", "%s: no pin matches" % role))
             continue
-        parts = []
-        for net in nets:
-            parts += c.parts_between(net, targets - {net},
-                                     rule.get("prefixes"))
+        parts = c.parts_from_role(role, targets, rule.get("prefixes"))
         label = "%s -> %s" % (role, rule.get("to_role"))
+        named = ", ".join("%s %s" % (r, v) for r, v, _ in parts)
         if mode == "no_passive_to":
             out.append(("FAIL" if parts else "PASS",
-                        "%s: %s" % (label, ", ".join(
-                            "%s %s" % p for p in parts) or "none")))
+                        "%s: %s" % (label, named or "none")))
             continue
         if mode == "part_on_net":
             out.append(("PASS" if parts else "FAIL",
-                        "%s: %s" % (label, ", ".join("%s %s" % p for p in parts)
-                                    or "no %s part" % "/".join(
-                                        rule.get("prefixes") or []))))
+                        "%s: %s" % (label, named or "no %s part" % "/".join(
+                            rule.get("prefixes") or PASSIVE_PREFIXES))))
             continue
         good, bad = [], []
-        for ref, val in parts:
+        for ref, val, _ in parts:
             got = parse_value(val)
             ok = (want is None or (got is not None
                                    and abs(got - want) <= want * tol + 1e-12))
             (good if ok else bad).append("%s %s" % (ref, val))
-        count = rule.get("count") or 1
+        count = rule.get("count")
+        if count is None:
+            count = 1
         verdict = "PASS" if len(good) == count and not bad else "FAIL"
         out.append((verdict, "%s: %d in band (%s)%s%s"
                     % (label, len(good), ", ".join(good) or "none",
                        "; out of band: " + ", ".join(bad) if bad else "",
                        "" if want is None else "; want %g x (1 +/- %g), "
                        "exactly %d" % (want, tol, count))))
+    return out
+
+
+def r_part_to_net(c, rule):
+    """Parts from each role's net to a net that is neither ground nor a
+    role's net; `to_net` narrows the far net by name."""
+    out = []
+    role_nets = set()
+    for role in c.defn["roles"]:
+        role_nets.update(c.nets(role))
+    pat = re.compile(rule["to_net"], re.I) if rule.get("to_net") else None
+    targets = {n for n in c.net["nodes"]
+               if n not in role_nets and not c.ground.match(c.clean(n))
+               and (pat is None or pat.search(c.clean(n)))}
+    want = rule.get("value_ohms") or rule.get("value_farads")
+    tol = rule.get("tolerance") or 0.0
+    count = rule.get("count")
+    for role in rule.get("roles") or []:
+        nets = c.nets(role)
+        if not nets:
+            out.append(("FAIL", "%s: no pin matches" % role))
+            continue
+        parts = c.parts_from_role(role, targets, rule.get("prefixes"))
+        good, bad = [], []
+        for ref, val, far in parts:
+            got = parse_value(val)
+            ok = (want is None or (got is not None
+                                   and abs(got - want) <= want * tol + 1e-12))
+            (good if ok else bad).append("%s %s -> %s" % (
+                ref, val, "/".join(c.clean(f) for f in far)))
+        label = "%s -> %s" % (role, rule.get("to_net") or
+                              "a net that is not ground or a role")
+        if count is None:
+            verdict = "PASS" if good and not bad else "FAIL"
+        else:
+            verdict = "PASS" if len(good) == count and not bad else "FAIL"
+        out.append((verdict, "%s: %d in band (%s)%s%s"
+                    % (label, len(good), ", ".join(good) or "none",
+                       "; out of band: " + ", ".join(bad) if bad else "",
+                       "" if want is None and count is None else
+                       "; want %s%s" % (
+                           "%g x (1 +/- %g)" % (want, tol)
+                           if want is not None else "any value",
+                           ", exactly %d" % count if count is not None
+                           else ""))))
     return out
 
 
@@ -390,6 +546,7 @@ RULES = {
     "passive_to": r_passive,
     "no_passive_to": lambda c, r: r_passive(c, r, "no_passive_to"),
     "part_on_net": lambda c, r: r_passive(c, r, "part_on_net"),
+    "part_to_net": r_part_to_net,
     "manual": r_manual,
 }
 
@@ -460,10 +617,12 @@ def check_mating(ref, defn, part, board_given=False):
 
 # ---------------------------------------------------------------------- main
 
-def run_checks(sch, design, board=None, netlist=None, allow_undefined=False):
+def run_checks(sch, design, board=None, netlist=None, allow_undefined=False,
+               project=None):
     tables = kicad_geom.load_design_tables(design, ("PARTS",))
     parts = tables["PARTS"]
-    defs, aliases, problems = load_definitions()
+    defs, aliases, problems = load_definitions(
+        project_roots(project, sch, design))
     contract = (kicad_geom.fit_contract(board, design) if board else None)
     by_ref = dict((p["ref"], p) for p in (contract or {}).get("parts", []))
 
@@ -482,13 +641,14 @@ def run_checks(sch, design, board=None, netlist=None, allow_undefined=False):
             netlist = export_netlist(sch, os.path.join(tmpdir, "net.net"))
         net = read_netlist(netlist)
     else:
-        net = {"values": {}, "pins": {}, "nodes": {}}
+        net = {"values": {}, "pins": {}, "nodes": {}, "dnp": {}}
 
     # A PARTS row keyed by value applies to every ref carrying that value.
     results = []
     for key, entry in sorted(declared.items()):
-        refs = [key] if key in net["pins"] or key in by_ref else sorted(
-            r for r, v in net["values"].items() if v == key) or [key]
+        refs = ([key] if key in net["pins"] or key in by_ref
+                or key in net["dnp"] else sorted(
+                    r for r, v in net["values"].items() if v == key) or [key])
         for ref in refs:
             defn = resolve(entry["interface"], defs, aliases)
             rows = []
@@ -496,12 +656,18 @@ def run_checks(sch, design, board=None, netlist=None, allow_undefined=False):
                 rows.append(("definition",
                              "WARN" if allow_undefined else "FAIL",
                              "no definition for interface %r (scripts/"
-                             "interfaces/*.json, or a hw_forge.interface "
-                             "block in kb/interfaces/*.md)"
+                             "interfaces/*.json, PROJECT/interfaces/*.json, "
+                             "or a hw_forge.interface block in "
+                             "kb/interfaces/*.md or PROJECT/kb/interfaces/"
+                             "*.md)"
                              % entry["interface"]))
             elif str(entry.get("interface_wiring", "")).lower() == "module":
                 rows.append(("wiring", "SKIP", "interface_wiring = module: "
                              "the standard's circuit is inside the module"))
+            elif ref in net.get("dnp", {}):
+                rows.append(("wiring", "SKIP", "%s is marked do-not-populate"
+                             " (dnp): not fitted, so no wiring to check"
+                             % ref))
             elif ref not in net["pins"]:
                 rows.append(("wiring", "FAIL", "%s is not in the schematic "
                              "netlist" % ref))
@@ -547,17 +713,20 @@ def main():
     ap.add_argument("--allow-undefined", action="store_true",
                     help="report an interface with no definition as WARN "
                          "instead of FAIL")
+    ap.add_argument("--project", metavar="DIR",
+                    help="a project root whose interfaces/ and "
+                         "kb/interfaces/ also load (default: found from the "
+                         "schematic and --design)")
     ap.add_argument("--list", action="store_true",
                     help="list the loadable definitions and exit")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     if args.list:
-        defs, aliases, problems = load_definitions()
+        defs, aliases, problems = load_definitions(
+            project_roots(args.project, args.schematic, args.design))
         for did, d in sorted(defs.items()):
-            print("%-22s %s  (%s)" % (did, d["title"],
-                                      os.path.relpath(d["_path"],
-                                                      os.path.dirname(HERE))))
+            print("%-22s %s  (%s)" % (did, d["title"], d["_path"]))
             al = sorted(a for a, i in aliases.items() if i == did)
             if al:
                 print("%-22s aliases: %s" % ("", ", ".join(al)))
@@ -567,7 +736,8 @@ def main():
     if not args.schematic:
         ap.error("pass the schematic (or --list)")
     results, problems = run_checks(args.schematic, args.design, args.board,
-                                   args.netlist, args.allow_undefined)
+                                   args.netlist, args.allow_undefined,
+                                   args.project)
     if args.json:
         json.dump({"results": results, "problems": problems}, sys.stdout,
                   indent=2)

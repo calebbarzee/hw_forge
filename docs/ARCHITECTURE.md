@@ -73,9 +73,11 @@ hw_forge/
 │   ├── kicad_geom.py               # s-expr parser: outline, holes, positions; --contract: the fit contract
 │   ├── kicad_scaffold.py           # project + lib-tables + .kicad_pro severity patching
 │   ├── kicad_digest.py             # canonical KIID-free digest: the determinism check
+│   ├── hw_stamp.py                 # design.py hash stamped into the board and schematic
 │   ├── kicad_3d.py                 # STEP assembly export, verify, render
 │   ├── kicad_fpcheck.py            # pad geometry vs the declared package
-│   ├── packages.json               # nominal package dimensions, every number cited
+│   ├── packages.json               # nominal package dimensions, every number cited;
+│   │                               #   a project's packages-project.json extends it
 │   ├── kicad_silkcheck.py          # silk readability: floors, overlaps, orientation, labels
 │   ├── kicad_fplib.py              # fork and edit a project-local footprint: the fpcheck fix
 │   ├── kicad_bom.py                # BOM field audit + export; board-inherent items excluded
@@ -125,10 +127,10 @@ reported.
 | 0 | **Spec lock** | a device idea | orchestrator + user | `SPEC.md` from the intake question bank (`references/intake.md`), asked in one batch: locked choices verbatim, delegated defaults recorded, a placement-intent table and a rules list that every agent prompt carries. Every question with no safe default is answered or explicitly delegated. |
 | 1 | **Libraries + research** | locked spec | `resource-scout` | Every part resolves. A provenance manifest exists for each vendored asset. Pin tables are verified against two independent sources. Zero hand-authored geometry, 3D models included. Every resolved footprint is checked against the part's declared package with `kicad_fpcheck.py`. |
 | 2 | **Logical design** | resolved part list | agent | `design.py` imports clean under both the system Python and the CAD Python. Nets, pin maps, and topology all derive from it. |
-| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py --sch-only`, exit 0; a board-less project reports DRC as SKIPPED). A power-design decision record is written, meaning a decision document rather than a citation list. `kicad_bom.py audit` exits 0: every sourced part carries its sourcing fields and every board-inherent symbol is excluded from the BOM. `kicad_schrules.py` exits 0: no error-severity finding for decoupling, bulk capacitance, LED data resistor or pull-ups (connector input protection is a warning, fixed or waived with a reason). |
-| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity with schematic parity enforced, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical digest. Autorouted copper, where the spec permits it, is adopted back into the generator as a committed routing file (`kicad_route.py adopt`). Silk passes `kicad_silkcheck.py`. Every declared connector passes `kicad_ifcheck.py`, and the fit contract (`kicad_geom.py --contract`) exits 0: every connector declares a mating direction and its face points out through its edge. `make check` is the DRC half of this gate; `make review` runs the whole of it. |
+| 3 | **Schematic** | clean `design.py` | `schematic-engineer` | ERC 0 (`kicad_gate.py --sch-only`, exit 0; a board-less project reports DRC as SKIPPED). A power-design decision record is written, meaning a decision document rather than a citation list. `kicad_bom.py audit` exits 0: every sourced part carries its sourcing fields, every board-inherent symbol is excluded from the BOM, and every off-board pad set (kind `off_board`) is `in_bom yes` with sourcing fields. `kicad_schrules.py` exits 0: no error-severity finding for decoupling, bulk capacitance, LED data resistor or pull-ups (connector input protection is a warning, fixed or waived with a reason). `gen_sch.py` stamps the schematic: `scripts/hw_stamp.py` writes a `design.py` hash into title block comment 9. |
+| 4 | **PCB** | ERC-clean schematic | `pcb-engineer`, one per board variant | DRC 0 at error severity with schematic parity enforced, 0 unconnected, zones filled headlessly inside the generator, and a wipe-and-rebuild reproducing the same canonical digest. `gen_pcb.py` stamps the board with the same `design.py` hash (`hw_stamp.py`, title block comment 9). Autorouted copper, where the spec permits it, is adopted back into the generator as a committed routing file (`kicad_route.py adopt`). Silk passes `kicad_silkcheck.py`. Every declared connector passes `kicad_ifcheck.py`, and the fit contract (`kicad_geom.py --contract`) exits 0: every connector declares a mating direction and its face points out through its edge. `make check` is the DRC half of this gate; `make review` runs the whole of it. |
 | 5 | **Fab outputs** | gated board that has passed the pre-order review (5a) | `fab-docs-engineer` | Export assertions pass: every artifact non-empty, hole counts, the per-side placement split, declared-empty layers. A manifest stamps the export's provenance. Renders are inspected. `kicad_fpcheck.py` runs clean before any export. `kicad_bom.py audit` re-runs clean, and the BOM step fails on any empty required cell. |
-| 5a | **Pre-order review** | gated board plus fab profile. Runs after phase 4 and before the phase 5 fab export, and again after phase 6 when there is an enclosure | orchestrator | `hw_review.py PROJECT_DIR` exits 0: preflight, gate, package check, BOM audit, schematic rules (`kicad_schrules.py`), silk, interface check, fit contract, case suite, fab assertions (into a scratch directory) and 3D assembly, as one readiness table. Every SKIP or WARN is relayed as a property not proven. `make fab` depends on it. |
+| 5a | **Pre-order review** | gated board plus fab profile. Runs after phase 4 and before the phase 5 fab export, and again after phase 6 when there is an enclosure | orchestrator | `hw_review.py PROJECT_DIR` exits 0 (PROJECT_DIR may be the project root; the KiCad directory is found under `kicad/`): fresh (board and schematic stamped with the current `design.py` hash), preflight, gate, package check, BOM audit, schematic rules (`kicad_schrules.py`), silk, interface check, fit contract, case suite, fab assertions (into a scratch directory) and 3D assembly, as one readiness table. Every SKIP or WARN is relayed as a property not proven. `make fab` depends on it. |
 | 6 | **Enclosure** | gated board files and the fit contract | `case-engineer` | All numeric `verify()` checks pass, including the contract-driven fit checks (board in cavity, part clearance, connector openings, minimum wall, fastener stack-up). Shells are valid single solids. Printability rules hold. |
 | 7 | **Docs + hygiene + harvest** | everything above green | agent + orchestrator | Docs describe the as-built state. Gates still pass after cleanup. New lessons are written into knowledge-base cards. |
 
@@ -236,9 +238,9 @@ What each piece of hw_forge is, and its state.
 | `references/mechanical.md`, `references/batteries.md` | Fastening and printability, and cell tables, written as formulas and tables | done |
 | `kb/` cards | One card per domain-specific fact, tagged by domain | done |
 | `scripts/preflight.py` | The smoke-test rule made executable; reports whether an autorouter is reachable, non-fatally | done |
-| `scripts/kicad_fpcheck.py`, `scripts/packages.json` | Pad geometry against the declared package, with a cited nominal-dimension table | done |
+| `scripts/kicad_fpcheck.py`, `scripts/packages.json` | Pad geometry against the declared package, with a cited nominal-dimension table a project's `packages-project.json` extends; a polarized part on a footprint with no polarity mark fails | done |
 | `scripts/kicad_silkcheck.py`, `references/silkscreen.md` | Silk readability against the fab's floors: size/stroke, pad/text overlap, reading orientation, refdes distance, required labels by part class | done |
-| `scripts/kicad_bom.py` | BOM field completeness audit and export, with the board-inherent exclusion rule | done |
+| `scripts/kicad_bom.py` | BOM field completeness audit and export, with the board-inherent exclusion rule and the `off_board` kind (a pad set whose BOM row is the part it receives) | done |
 | `scripts/kicad_schrules.py`, `templates/sch-rules.json` | Schematic rules ERC does not cover: decoupling, bulk capacitance, LED data resistor, pull-up windows per net class, connector input protection; DNP parts excluded | done; connectivity only, placement distance is a board check |
 | `scripts/kicad_fplib.py` | Fork a stock footprint into the project library and edit pads, model link, and provenance fields; the path from a finding to a fabbed change | done |
 | `scripts/hw_install.py` | Pinned, checksummed install of Freerouting, the Fabrication Toolkit, and KiCadRoutingTools; `--check` reports without downloading | done |
@@ -246,10 +248,11 @@ What each piece of hw_forge is, and its state.
 | `references/intake.md`, `templates/SPEC.md` | The phase-0 question bank and the decisions-doc skeleton | done |
 | `docs/QUALITY.md` | The generic quality process: the property sequence, the check that proves each, the three failure classes | done |
 | `kicad_geom.py --contract` | The board-to-enclosure fit contract, versioned schema; fails a connector with no mating direction, and a mating face that does not point out through its edge (B8) | done |
-| `case_verify.py` fit checks | `board_in_cavity`, `cavity_clearance`, `connector_openings`, `min_wall` (B9), `fastener_stackup`, solid mode in build123d or numeric mode | done; part bodies are boxes, see `QUALITY.md` §3 |
-| `scripts/kicad_ifcheck.py`, `interfaces.schema.json`, `scripts/interfaces/` | Connectors against their standards, with the rule ids of `references/interfaces.md` | done for USB-C device, generic 2-pin power and 2.54 mm SWD headers; other standards need a definition file |
+| `case_verify.py` fit checks | `board_in_cavity`, `cavity_clearance`, `connector_openings` (off-board panel parts and pigtail length included), `min_wall` (B9), `fastener_stackup`, solid mode in build123d or numeric mode | done; part bodies are boxes, see `QUALITY.md` §3 |
+| `scripts/kicad_ifcheck.py`, `interfaces.schema.json`, `scripts/interfaces/` | Connectors against their standards, with the rule ids of `references/interfaces.md` | done for USB-C device, generic 2-pin power and 2.54 mm SWD headers; other standards need a definition file, shipped or in the project's `interfaces/` or `kb/interfaces/` |
 | `references/domains.md`, `references/interfaces.md`, `kb/interfaces/` | Per-domain failure modes and per-connector requirements, written for any EE design | done |
 | `scripts/hw_review.py` | The pre-order gate, one readiness table | done |
+| `scripts/hw_stamp.py` | The `design.py` hash in each generated board and schematic, read by the review's fresh row | done; the generators call it (two lines, `templates/design.py`) |
 | `templates/drc-baseline.kicad_dru`, `templates/drc-fork.kicad_dru` | Fab-floor custom DRC rules for every project, written once and never overwritten; fork-only rules a marked block, inserted only behind the preflight probe and removed on a stock binary | done |
 | `references/autorouting.md` | Scripted against autorouted copper: the decision rule, hybrid flow, and tool comparison | done |
 | `references/kicad-ecosystem.md` | Plugins, MCP servers, and tools for headless KiCad, with adopt, evaluate, or skip verdicts | done |
@@ -313,7 +316,14 @@ python3 scripts/kicad_digest.py BOARD.kicad_pcb [--compare A B] [--expect SHA1]
 python3 scripts/kicad_scaffold.py DIR NAME | DIR --repatch
                                           [--severity RULE=LEVEL] [--design-rule K=V]
                                           [--net-class ...] [--sym-lib ...] [--fp-lib ...]
+                                          [--stock-sym-lib NAME] [--stock-fp-lib NAME]
                                           [--fork-rules] [--reinstall-rules] [--no-rules]
+python3 scripts/kicad_fpcheck.py BOARD|MOD|PRETTY [--design design.py]
+                                          [--packages FILE]... [--no-project-packages]
+                                          [--sch SCH] [--declared-only] [--json] [-v]
+python3 scripts/kicad_bom.py audit SCH [--board BOARD] [--design design.py]
+                                          [--assembly jlcpcb|none] [--json]
+python3 scripts/hw_stamp.py FILE... --design design.py [--write]
 python3 scripts/kicad_schrules.py SCH [--rules FILE] [--set RULE.KEY=VALUE]
                                           [--netlist XML] [--json] [--selftest]
 python3 scripts/kicad_geom.py BOARD.kicad_pcb --contract FIT.json
@@ -325,11 +335,12 @@ python3 scripts/case_verify.py CHECKS.py [--suite NAME] [--dump-names FILE]
                                           [--json] [--quiet]
 python3 scripts/kicad_ifcheck.py SCH [--design design.py] [--board BOARD]
                                           [--netlist NET] [--allow-undefined]
-                                          [--list] [--json]
+                                          [--project DIR] [--list] [--json]
 python3 scripts/hw_review.py PROJECT_DIR [--name NAME] [--design design.py]
                                           [--case CHECKS.py] [--case-python PY]
                                           [--fab PROFILE] [--assembly jlcpcb|none]
-                                          [--rules FILE] [--strict-interfaces]
+                                          [--packages FILE]... [--rules FILE]
+                                          [--strict-interfaces]
                                           [--no-3d] [--keep DIR] [--json]
 python3 scripts/gerber_diff.py OLD_FAB_DIR NEW_FAB_DIR
 python3 scripts/report.py FILE.json [--strict] [--by-owner] [--baseline FILE]

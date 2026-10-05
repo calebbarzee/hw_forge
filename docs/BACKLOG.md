@@ -8,10 +8,11 @@ Each item names the gap numbers it covers in `hexpad/GAPS.md`, why it is
 deferred rather than done, and what would have to be true to close it.
 
 The criterion that put these here rather than into a harvest: a fix must be
-verifiable in the same pass that writes it. Five of the ten below need a
-mechanism the pipeline does not yet have (B1, B2, B5, B7, B10). One needs a packaging
+verifiable in the same pass that writes it. Six of the twelve below need a
+mechanism the pipeline does not yet have (B1, B2, B5, B7, B10, B11). One needs a packaging
 decision (B4), and one needs a cross-project convention before it can safely
-write into someone's source (B6). Writing a doc line about any of them would
+write into someone's source (B6). One is upstream behaviour hw_forge cannot
+fix (B12). Writing a doc line about any of them would
 have produced a rule with nothing behind it; a recorded gap at least states what
 is missing.
 
@@ -39,6 +40,8 @@ as fixed in `hexpad/GAPS.md` and as open here.
 | **B8** | Connector mating face against the board edge | *(mechanism shipped)*; open remainder: a connector with no declaration, no J/P/USB/CN/X prefix and no `Connector*` library is not seen; the footprint-local axis per stock footprint is verified for one USB-C part so far; the fork's `connector_edge` and the fit contract read one property, `mating_direction` (fork master, 2026-10-03) |
 | **B9** | Local wall-thickness floor in `case_verify.py` | *(mechanism shipped)*; open remainder: ray sampling about `spacing` (2 mm) apart, capped at 64 samples per face axis, can miss a thin region smaller than its grid |
 | **B10** | Courtyard gap around tall parts | an emitter that writes KiCad's component class `TALL` from `design.py` `height_mm`; without it a rule on that class never fires |
+| **B11** | A STEP model's plan box in the fit contract | a reader that resolves a model's surfaces, not its CARTESIAN_POINT sweep; the sweep's z is right and its x and y are oversize |
+| **B12** | Stock DRC findings vary between runs of one board | a deterministic finding set: the fork binary, or a stock release that fixes it; `report.py --baseline --strict` on stock is not a gate on such a board until then |
 
 ---
 
@@ -173,16 +176,21 @@ proposed. Rather than a `kb/` library of pad geometry confirmed on a fabbed
 board (which only accumulates coverage for parts a project has already built),
 `packages.json` shipped nominal geometry for 26 common packages up front, each
 number cited to a JEDEC/IPC designator, a manufacturer datasheet, or KiCad's
-own stock footprint library. It now holds 71 entries, 45 of them connector
-families (43 of kind `connector`, 2 of kind `offboard`). That covers the failure class both measured
+own stock footprint library. It now holds 77 entries, 45 of them connector
+families (43 of kind `connector`, 2 of kind `offboard`), and six through-hole
+families added from hypercardiod_mic (2026-10-04): axial DIN0207, ceramic
+disc, 5 mm radial electrolytic, DO-41, and two solder-wire pad sets. A
+project's own families go in `packages-project.json`, which
+`kicad_fpcheck.py` and `hw_review.py` load beside the shipped table. That covers the failure class both measured
 incidents share, a common chip, diode, or IC package family, at zero prior
 building.
 
 **What is still open, precisely.**
 
 - **The MSK12C02 case itself is still uncovered.** `packages.json` has no
-  slide-switch family. Its 71 entries cover chip passives, diodes, SOT/SOIC/
-  TSSOP/MSOP/QFN/DFN/TO-252 and 45 connector families. Closing the measured
+  slide-switch family. Its 77 entries cover chip passives, diodes, SOT/SOIC/
+  TSSOP/MSOP/QFN/DFN/TO-252, six through-hole families and 45 connector
+  families. Closing the measured
   case needs an entry added to `packages.json` for that family (the format is
   documented in the file's own `_read_me` field), which is now cheap but is
   not done.
@@ -466,6 +474,51 @@ rule that reads as a check.
 = `TALL` for any part whose `design.py` `height_mm` is at or above a
 project-stated threshold, a fixture board proves the rule fires on such a
 part, and the rule returns to the baseline.
+
+---
+
+## B11: A STEP model's plan box in the fit contract
+
+**Covers:** a finding of the hypercardiod_mic phase 1 research
+(`lib/research/passives-active.md` §5), 2026-10-03, not one of its `GAPS.md` gaps.
+
+`kicad_3d.model_extent()` sweeps every 3D `CARTESIAN_POINT` in a model file.
+The z band it gives is right, and `kicad_geom.py --contract` uses it for part
+heights. Its x and y are not a plan box: the sweep includes curve placement
+points and B-spline control points that sit off the surface. Measured:
+`Capacitor_THT C_Radial_D5.0mm_H11.0mm_P2.00mm.step`, a 5 mm can, sweeps
+x -4.05..6.05 and y -5.05..5.05 (10.1 x 10.1 mm); its z, -2.0..11.0, is
+right. `kicad_3d.py extent` now prints x and y labelled as not a bounding
+box. The contract's `model_bbox` and `envelope` still take the sweep's x and
+y, so a part's plan envelope is oversize, which is conservative for
+`cavity_clearance` and can fail a case that fits.
+
+**To close:** read a model's plan box from its resolved surfaces (OCCT, in
+the case venv) or from the footprint's Fab layer, and keep the sweep for z
+only. A regression case is the radial can above: the plan box must come out
+5.0 x 5.0 mm, plus the lead pitch.
+
+---
+
+## B12: Stock DRC findings vary between runs of one board
+
+**Covers:** a finding of the fork report-contract work, 2026-10-04, not a
+`hexpad/GAPS.md` gap.
+
+Stock `kicad-cli` 10.0.5 reports a different finding set on each run of the
+same board when items overlap. Measured on `hypercardiod_mic`'s
+`mic_buffer`, four `--severity-all` runs: `shorting_items` 30 to 35,
+`tracks_crossing` 11 to 14, `clearance` 6 to 11. Against run 1, runs 2 to 4
+added or removed 1, 3 and 2 finding classes. The fork build (`kicad-cli` 10.99.0,
+built 2026-10-04) gave the same set on all four runs.
+
+`report.py --baseline --strict` fails on a new finding class, so on stock it
+can fail a board that did not change. `hexpad` has no such findings and is
+stable on both binaries.
+
+**To close:** gate `--baseline --strict` with the fork binary, or confirm a
+stock release whose runs agree: four runs of `mic_buffer` with 0 class
+changes.
 
 ---
 

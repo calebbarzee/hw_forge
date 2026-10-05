@@ -284,7 +284,8 @@ REPORT
 Status:     commands run and their output verbatim: hw_review.py's table first,
             then gate, kicad_fpcheck.py, kicad_bom.py audit, fab assertions
 Package check: kicad_fpcheck.py's verdict per footprint that was not a clean
-            PASS, and whether design.py's PACKAGES table covered every
+            PASS (relay an fpcheck WARN (padded parts waived in
+            FPCHECK_WAIVERS, with each reason) and every polarity FAIL), and whether design.py's PACKAGES table covered every
             mechanically critical part
 BOM check:  kicad_bom.py audit's verdict per part that was not a clean PASS
             (missing field, or a board-inherent part not excluded), and

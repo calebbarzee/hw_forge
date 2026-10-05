@@ -35,13 +35,30 @@ two real missing footprints behind a green gate.
 So this script reads the project's own `.kicad_pro` and reports whether the
 parity result is enforceable:
 
-    parity      enforced at error severity (5/5)   <- a parity ok means something
-    parity      UNENFORCED  3 of 5 below error …   <- a parity ok means nothing
+    parity      enforced (.kicad_pro) 5/5          <- a parity ok means something
+    parity      UNENFORCED  3 of 5 below error ... <- a parity ok means nothing
 
 `--strict-parity` turns that warning into a failing check, which is what CI
 wants.  `kicad_scaffold.py` writes the five promotions into every new project,
 so a scaffolded project is enforced from its first build; a project that
 predates that fix (or that demoted one deliberately) is what this detects.
+
+The forked kicad-cli.  `preflight.drc_capabilities()` probes the binary once
+per run (its `pcb drc --help`, and one DRC of a probe board).  When it takes
+`--severity-override`, the gate passes the five parity keys and every
+`FAB_SEVERITIES` promotion on the command line, at the levels
+`hwforge-overrides.json` records for them (hw_forge's defaults where it
+records none), so a `.kicad_pro` that pcbnew's SaveBoard() reverted no longer
+un-gates them:
+
+    parity      enforced (override) 5/5
+
+When it takes `--strict-rules`, the gate passes it, and a rule file that does
+not compile fails as `rule file invalid (exit 8)`, distinct from a board that
+did not load (`load failure (exit 3)`).  A binary without `--strict-rules`
+(stock 10.0.5) drops such a file whole, silently, exit 0, so the gate instead
+scans `NAME.kicad_dru` for constraint keywords that binary does not compile
+and fails as `DRC rules DROPPED`.  On stock nothing else changes.
 
 The project name is auto-discovered from the .kicad_pro / .kicad_sch /
 .kicad_pcb in the directory; --name is only needed when a directory holds more
@@ -66,6 +83,7 @@ board that exists is always gated.
 import argparse
 import json
 import os
+import re
 import sys
 
 # Set before any sibling import: these tools run against other people's
@@ -75,7 +93,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import report as report_mod
 from _kicad_env import cli_version, find_cli, run
-from kicad_scaffold import PARITY_SEVERITIES
+from kicad_scaffold import FAB_SEVERITIES, OVERRIDES_FILE, PARITY_SEVERITIES
+from preflight import (FORK_KEYWORDS, STOCK_CONSTRAINTS, drc_capabilities,
+                       unknown_constraints)
 
 ERC_FLAGS = ["--severity-error", "--format", "json", "--exit-code-violations"]
 DRC_FLAGS = ["--schematic-parity", "--severity-error", "--format", "json",
@@ -85,6 +105,20 @@ DRC_FLAGS = ["--schematic-parity", "--severity-error", "--format", "json",
 # is a tool/usage failure and must be reported differently: a broken invocation
 # that we counted as "violations" would look like a design problem.
 EXIT_VIOLATIONS = 5
+# The fork's contract (tools/ai_pipeline/docs/reports.md in the fork): 1 is a
+# bad argument, such as an unknown --severity-override key; 3 is a board or
+# schematic that did not load; 8 is a rule file that did not compile, and is
+# only returned under --strict-rules (without it the fork returns 3 for that
+# too).  Stock 10.0.5 returns 0 on a rule file it cannot compile.
+EXIT_ARGS = 1
+EXIT_LOAD = 3
+EXIT_RULES_INVALID = 8
+STATE_TEXT = {
+    "rules_invalid": "FAIL  rule file invalid (exit 8)",
+    "load_failure": "FAIL  load failure (exit 3)",
+    "bad_argument": "ERROR  bad argument (exit 1)",
+}
+SEVERITY_LEVELS = ("ignore", "warning", "error", "exclusion")
 
 
 def discover(project_dir, name=None):
@@ -140,9 +174,76 @@ def parity_enforcement(project_dir, name):
         (pro if found else None)
 
 
-def say_parity(say, project_dir, name):
+def severity_overrides(project_dir):
+    """{key: level} the gate passes as --severity-override on a fork binary.
+
+    hw_forge's defaults (PARITY_SEVERITIES over FAB_SEVERITIES, as
+    kicad_scaffold.py merges them), then the project's own decision for any
+    of those keys recorded in hwforge-overrides.json.  The sidecar is the
+    record of a deliberate demotion; the .kicad_pro is not, because
+    pcbnew's SaveBoard() reverts it.  Keys outside the two tables are left
+    to the .kicad_pro.
+    """
+    levels = dict(FAB_SEVERITIES)
+    levels.update(PARITY_SEVERITIES)
+    try:
+        with open(os.path.join(project_dir, OVERRIDES_FILE)) as fh:
+            recorded = json.load(fh).get("rule_severities") or {}
+    except (OSError, ValueError, AttributeError):
+        recorded = {}
+    for key in levels:
+        if recorded.get(key) in SEVERITY_LEVELS:
+            levels[key] = recorded[key]
+    return levels
+
+
+def drc_flags(caps, overrides=None):
+    """DRC_FLAGS, plus the fork flags this binary accepts."""
+    flags = list(DRC_FLAGS)
+    if caps.get("strict_rules"):
+        flags.append("--strict-rules")
+    if caps.get("severity_override") and overrides:
+        for key in sorted(overrides):
+            flags += ["--severity-override", "%s=%s" % (key, overrides[key])]
+    return flags
+
+
+def say_dropped_rules(project_dir, name, caps):
+    """On a binary without --strict-rules, name the constraint keywords in
+    NAME.kicad_dru it cannot compile.  Returns 1 if any, else 0.
+
+    Stock 10.0.5 drops such a file WHOLE, prints nothing and exits 0, so
+    every custom rule in it stops running and nothing in the report says so.
+    The keyword list is preflight.STOCK_CONSTRAINTS (read from 10.0.5's
+    parser), plus FORK_KEYWORDS when the probe says the binary compiles them.
+    """
+    path = os.path.join(project_dir, name + ".kicad_dru")
+    if caps.get("strict_rules") or not os.path.exists(path):
+        return 0
+    known = STOCK_CONSTRAINTS + (FORK_KEYWORDS
+                                 if caps.get("fork_rules") == "fork" else ())
+    bad = unknown_constraints(path, known)
+    if not bad:
+        return 0
+    print("  %-11s DROPPED  %s names constraint(s) this kicad-cli does not "
+          "compile: %s" % ("DRC rules", os.path.basename(path),
+                           ", ".join(bad)))
+    print("              WARNING: stock kicad-cli drops such a file WHOLE, "
+          "silently, exit 0: no\n              custom rule in it ran, and the "
+          "DRC lines above do not cover them. fix:\n"
+          "                correct the keyword, or gate with the forked "
+          "kicad-cli (KICAD_CLI=...)")
+    return 1
+
+
+def say_parity(say, project_dir, name, overrides=None):
     """Print whether a `parity ok` above this line means anything. Returns
     the number of parity checks that cannot fail the gate.
+
+    `overrides` is the {key: level} map passed as --severity-override, or
+    None on a binary without that flag.  With it, the .kicad_pro does not
+    decide enforcement, and a .kicad_pro below error is only a note: the GUI
+    and a stock kicad-cli still read it.
 
     The `enforced` line honours --quiet (it is an ok line); the UNENFORCED
     block never does.  A warning that says the gate above it did not run is
@@ -151,8 +252,34 @@ def say_parity(say, project_dir, name):
     """
     enforced, unenforced, pro = parity_enforcement(project_dir, name)
     total = len(enforced) + len(unenforced)
+    if overrides is not None:
+        demoted = sorted(r for r in PARITY_SEVERITIES
+                         if overrides.get(r) != "error")
+        if not demoted:
+            say("  %-11s enforced (override) %d/%d" % ("parity", total, total))
+            if unenforced:
+                say("              note: %s holds %d of %d below error; the "
+                    "GUI and a stock kicad-cli\n              still read it. "
+                    "fix:\n                python3 scripts/kicad_scaffold.py "
+                    "%s --repatch %s"
+                    % (os.path.basename(pro) if pro else "no .kicad_pro",
+                       len(unenforced), total, project_dir,
+                       " ".join("--severity %s=error" % r
+                                for r in unenforced)))
+            return 0
+        print("  %-11s UNENFORCED  %d of %d parity checks demoted in %s"
+              % ("parity", len(demoted), total, OVERRIDES_FILE))
+        print("              %s" % ", ".join(
+            "%s=%s" % (r, overrides[r]) for r in demoted))
+        print("              the override follows the recorded demotion, so "
+              "any `parity ok` above\n              does not cover them. "
+              "fix, once the demotion is no longer wanted:")
+        print("                python3 scripts/kicad_scaffold.py %s --repatch %s"
+              % (project_dir, " ".join("--severity %s=error" % r
+                                       for r in demoted)))
+        return len(demoted)
     if not unenforced:
-        say("  %-11s enforced at error severity (%d/%d)"
+        say("  %-11s enforced (.kicad_pro) %d/%d"
             % ("parity", len(enforced), total))
         return 0
     print("  %-11s UNENFORCED  %d of %d parity checks are below error severity"
@@ -173,9 +300,10 @@ def say_parity(say, project_dir, name):
 def run_check(cli, subcmd, flags, src, out_json):
     """Run one kicad-cli check.
 
-    Returns (state, detail) where state is 'ok', 'violations', 'missing' or
-    'error'.  The JSON report is the source of truth for the printed summary;
-    the exit code only tells us whether to look at it.
+    Returns (state, detail) where state is 'ok', 'violations', 'missing',
+    'rules_invalid' (exit 8), 'load_failure' (exit 3), 'bad_argument'
+    (exit 1) or 'error'.  The JSON report is the source of truth for the
+    printed summary; the exit code only tells us whether to look at it.
     """
     if not os.path.exists(src):
         return "missing", "no such file: %s" % src
@@ -184,9 +312,26 @@ def run_check(cli, subcmd, flags, src, out_json):
         return "ok", ""
     if proc.returncode == EXIT_VIOLATIONS and os.path.exists(out_json):
         return "violations", out_json
-    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-    return "error", (detail[-1] if detail else "kicad-cli exited %d"
-                     % proc.returncode)
+    state = {EXIT_RULES_INVALID: "rules_invalid", EXIT_LOAD: "load_failure",
+             EXIT_ARGS: "bad_argument"}.get(proc.returncode, "error")
+    return state, cli_reason(proc)
+
+
+def cli_reason(proc):
+    """The line of kicad-cli's output that says why it failed.
+
+    The fork's rule-parser error lists every keyword it knows after
+    `Expected`; that list is cut, so the line keeps the keyword and position.
+    """
+    lines = [l.strip() for l in (proc.stderr or proc.stdout or "")
+             .splitlines() if l.strip()]
+    for i, line in enumerate(lines):
+        if line.startswith("ERROR:"):
+            if i + 1 < len(lines) and lines[i + 1].startswith("in '"):
+                line += " " + lines[i + 1]          # the file and position
+            return re.sub(r"\.?\s*Expected .*?(?= in '|$)", "",
+                          line[6:].strip())
+    return lines[-1] if lines else "kicad-cli exited %d" % proc.returncode
 
 
 def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
@@ -218,7 +363,8 @@ def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
     elif state == "violations":
         failures += max(1, report_mod.summarise(erc_json))
     else:
-        say("  %-11s %s  %s" % ("ERC", state.upper(), detail))
+        print("  %-11s %s  %s"
+              % ("ERC", STATE_TEXT.get(state, state.upper()), detail))
         failures += 1
 
     # The board is skipped, not failed, when there is deliberately none yet.
@@ -228,24 +374,41 @@ def gate(project_dir, name=None, cli=None, quiet=False, sch_only=False,
         why = ("--sch-only" if sch_only
                else "no board file yet: %s" % os.path.basename(pcb))
         say("  %-11s SKIPPED  (%s)" % ("DRC", why))
-        say("  verdict     PARTIAL — schematic only, the board is NOT gated")
+        say("  verdict     PARTIAL: schematic only, the board is NOT gated")
         return failures, "partial"
 
+    # A fork binary takes the severities on the command line, so enforcement
+    # no longer depends on what the .kicad_pro holds; a stock one reads only
+    # the .kicad_pro, which kicad_scaffold.py --repatch keeps current.
+    caps = drc_capabilities(cli)
+    overrides = (severity_overrides(project_dir)
+                 if caps["severity_override"] else None)
     drc_json = os.path.join(project_dir, "drc.json")
-    state, detail = run_check(cli, ["pcb", "drc"], DRC_FLAGS, pcb, drc_json)
+    state, detail = run_check(cli, ["pcb", "drc"], drc_flags(caps, overrides),
+                              pcb, drc_json)
     if state in ("ok", "violations") and os.path.exists(drc_json):
         # Always print all three DRC sections from the report, pass or fail:
         # a clean run should show what was checked, not just silence.
         failures += report_mod.summarise(drc_json)
     else:
-        say("  %-11s %s  %s" % ("DRC", state.upper(), detail))
+        print("  %-11s %s  %s"
+              % ("DRC", STATE_TEXT.get(state, state.upper()), detail))
         failures += 1
+    failures += say_dropped_rules(project_dir, name, caps)
 
     # Printed after the DRC lines, deliberately: this qualifies the `parity`
     # line the report just printed, and a reader has to see them together.
-    unenforced = say_parity(say, project_dir, name)
+    unenforced = say_parity(say, project_dir, name, overrides)
     if unenforced and strict_parity:
         failures += 1
+    if overrides is not None:
+        fab = sorted(k for k in FAB_SEVERITIES if k not in PARITY_SEVERITIES)
+        moved = sorted(k for k in fab if overrides[k] != FAB_SEVERITIES[k])
+        say("  %-11s %d by --severity-override: %d parity, %d fab%s"
+            % ("severities", len(overrides), len(PARITY_SEVERITIES), len(fab),
+               "; per %s: %s" % (OVERRIDES_FILE, ", ".join(
+                   "%s=%s" % (k, overrides[k]) for k in moved))
+               if moved else ""))
 
     return failures, "full"
 
@@ -264,8 +427,9 @@ def main():
                          "DRC (use where a board must exist by now)")
     ap.add_argument("--strict-parity", action="store_true",
                     help="fail the gate when any schematic-parity check is "
-                         "below error severity in the .kicad_pro, i.e. when a "
-                         "`parity ok` could not have failed")
+                         "below error severity (in the .kicad_pro, or with "
+                         "--severity-override in hwforge-overrides.json), "
+                         "i.e. when a `parity ok` could not have failed")
     args = ap.parse_args()
     if args.sch_only and args.require_board:
         ap.error("--sch-only and --require-board contradict each other")

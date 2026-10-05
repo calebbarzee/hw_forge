@@ -85,6 +85,27 @@ against KiCad 10's own stock footprint library rather than assumed:
             (at 444.5 368.3 0)
             (effects (font (size 1.27 1.27)) (hide yes)))
 
+A third kind sits between the two:
+
+  * An **off-board** part (kind `off_board`) is a pad set whose BOM row is
+    the off-board part it receives: a panel connector on a pigtail soldered
+    to wire pads, a microphone capsule on leads, a battery on a lead pair.
+    The part is bought, so the symbol stays `in_bom yes` and carries every
+    sourcing field a sourced part does.  Nothing is placed on the board by a
+    machine, so the footprint carries `exclude_from_pos_files`.  And the
+    footprint must not carry `exclude_from_bom`: KiCad's schematic parity
+    compares that attribute with the symbol's `in_bom`, so a stock
+    `Connector_Wire:SolderWire-*` footprint (which ships with both
+    attributes) fails parity as `footprint_symbol_mismatch` until the
+    generator clears it.  Before this kind existed both choices failed:
+    `in_bom no` failed SOURCED_EXCLUDED_FROM_BOM, `in_bom yes` failed parity
+    (hypercardiod_mic GAPS.md gap 6).
+
+    Declared by design.py `BOARD_INHERENT[ref] = "off_board"` or by an
+    `offboard` block in `PARTS[ref]` (the fit contract's off-board record);
+    a footprint from `Connector_Wire:SolderWire*` is taken as off-board when
+    neither says otherwise.
+
 See `templates/design.py`'s "Board-inherent kinds" and "Part fields"
 sections for the doctrine this script gates, and `commands/hw-bom.md` for
 the fill-in procedure.
@@ -149,6 +170,11 @@ LIB_KIND_HINTS = (
 # is doctrine (templates/design.py), not a hard gate this script enforces,
 # because a fiducial legitimately omits it (see the module docstring).
 POS_FILE_RELEVANT_KINDS = {"mounting_hole", "test_point"}
+
+# A pad set whose BOM row is the off-board part it receives (module
+# docstring).  Not board-inherent: it is sourced, and stays on the BOM.
+OFF_BOARD = "off_board"
+OFF_BOARD_LIB_HINTS = ("Connector_Wire:SolderWire",)
 
 REQUIRED_SOURCED_FIELDS = ("Manufacturer", "MPN", "Package", "Datasheet")
 
@@ -301,18 +327,26 @@ def board_footprint_attrs(board_path):
 
 # --------------------------------------------------------------- kind rules
 
-def kind_of(ref, value, lib_id, footprint, board_inherent):
+def kind_of(ref, value, lib_id, footprint, board_inherent, parts=None):
     """(kind, source) for a symbol, or (None, None) when it is sourced.
 
     Priority: an explicit design.py BOARD_INHERENT entry (by ref, then by
-    value, matching PACKAGES's own fallback order) always wins. Below that,
-    the reference-prefix and library-name heuristics, which exist so an
+    value, matching PACKAGES's own fallback order) always wins, then a PARTS
+    row with an `offboard` block (kind off_board). Below that, the
+    reference-prefix and library-name heuristics, which exist so an
     undeclared board-inherent part is still caught rather than silently
     treated as something to buy.
     """
     for key in (ref, value):
         if key and key in board_inherent:
             return board_inherent[key], "design.py BOARD_INHERENT[%r]" % key
+    for key in (ref, value):
+        row = (parts or {}).get(key) if key else None
+        if isinstance(row, dict) and row.get("offboard"):
+            return OFF_BOARD, "design.py PARTS[%r].offboard" % key
+    for needle in OFF_BOARD_LIB_HINTS:
+        if needle.lower() in (footprint or "").lower():
+            return OFF_BOARD, "footprint library %r" % footprint
     prefix = kicad_geom.designator(ref)["prefix"].upper()
     if prefix in PREFIX_KIND:
         return PREFIX_KIND[prefix], "reference prefix %r" % prefix
@@ -325,12 +359,45 @@ def kind_of(ref, value, lib_id, footprint, board_inherent):
     return None, None
 
 
+def off_board_findings(ref, source, in_bom, attrs):
+    """Findings for an off_board part's BOM row and its footprint's attrs."""
+    out = []
+    if in_bom == "no":
+        out.append(("FAIL", "OFF_BOARD_EXCLUDED_FROM_BOM",
+                    "kind=off_board (%s) but in_bom=no: the off-board part "
+                    "is bought, so the schematic emitter must set in_bom yes"
+                    % source))
+    if attrs is None:
+        return out
+    tokens = attrs.get(ref)
+    if tokens is None:
+        out.append(("FAIL", "OFF_BOARD_NO_FOOTPRINT",
+                    "kind=off_board but no footprint with Reference=%s was "
+                    "found on the given board" % ref))
+        return out
+    if "exclude_from_bom" in tokens:
+        out.append(("FAIL", "OFF_BOARD_FOOTPRINT_EXCLUDE",
+                    "kind=off_board but the footprint carries "
+                    "exclude_from_bom (stock SolderWire footprints do): "
+                    "schematic parity fails footprint_symbol_mismatch "
+                    "against in_bom yes. fix: the board emitter clears it, "
+                    "fp.SetExcludedFromBOM(False)"))
+    if "exclude_from_pos_files" not in tokens:
+        out.append(("FAIL", "OFF_BOARD_POS_FILE",
+                    "kind=off_board but the footprint lacks "
+                    "exclude_from_pos_files: the placement file would ask a "
+                    "machine to place a hand-wired part. fix: "
+                    "fp.SetExcludedFromPosFiles(True)"))
+    return out
+
+
 # ------------------------------------------------------------------- audit
 
 def audit(sch_path, board_path=None, design_path=None, assembly=None,
           min_desc_words=MIN_DESC_WORDS):
     """[{ref, value, kind, in_bom, dnp, findings: [(status, rule, detail)]}, ...]"""
     board_inherent = load_design_table(design_path, "BOARD_INHERENT")
+    parts = load_design_table(design_path, "PARTS")
     attrs = board_footprint_attrs(board_path) if board_path else None
 
     results = []
@@ -348,10 +415,13 @@ def audit(sch_path, board_path=None, design_path=None, assembly=None,
 
         footprint_prop = fields.get("Footprint", "")
         kind, kind_source = kind_of(ref, value, lib_id, footprint_prop,
-                                    board_inherent)
+                                    board_inherent, parts)
         findings = []
 
-        if kind:
+        if kind == OFF_BOARD:
+            # Its sourcing fields are checked below, as a sourced part's.
+            findings += off_board_findings(ref, kind_source, in_bom, attrs)
+        if kind and kind != OFF_BOARD:
             if in_bom != "no":
                 findings.append((
                     "FAIL", "BOARD_INHERENT_IN_BOM",
@@ -380,7 +450,7 @@ def audit(sch_path, board_path=None, design_path=None, assembly=None,
                         "still appear as a phantom placement row"
                         % kind))
         else:
-            if in_bom == "no":
+            if in_bom == "no" and kind != OFF_BOARD:
                 findings.append((
                     "FAIL", "SOURCED_EXCLUDED_FROM_BOM",
                     "no board-inherent kind matched this ref, but "
@@ -449,10 +519,12 @@ def print_audit(sch_path, results, verbose=False):
                 notes += 1
     total = len(results)
     sourced = sum(1 for r in results if r["kind"] == "sourced")
-    inherent = total - sourced
+    off = [r["ref"] for r in results if r["kind"] == OFF_BOARD]
+    inherent = total - sourced - len(off)
     dnp = sum(1 for r in results if r["dnp"] == "yes")
-    print("  %d symbol(s): %d sourced, %d board-inherent, %d dnp" % (
-        total, sourced, inherent, dnp))
+    print("  %d symbol(s): %d sourced, %d off-board%s, %d board-inherent, "
+          "%d dnp" % (total, sourced, len(off),
+                      " (%s)" % ", ".join(off) if off else "", inherent, dnp))
     if fails:
         print("  FAILED (%d finding(s) across %d symbol(s))"
              % (fails, sum(1 for r in results

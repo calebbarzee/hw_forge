@@ -1,4 +1,4 @@
-# <PROJECT> — what a generated hardware repo keeps and what it regenerates.
+# <PROJECT>: what a generated hardware repo keeps and what it regenerates.
 #
 # COPY THIS INTO YOUR PROJECT AT PHASE 0, before the first export.  The rule
 # it encodes is not "keep the repo small", it is: the repo is a DESCRIPTION OF
@@ -32,7 +32,7 @@ drc-all*.json
 # `make warnings` rotates the previous report to drc-all-<target>.prev.json, so
 # the finding-class diff always has an input.  That covers ONE revision.  To
 # keep a baseline across a clean checkout, commit one report deliberately and
-# name it — `make warnings BASELINE=rev3-drc-all.json` — so it is a claim on
+# name it: `make warnings BASELINE=rev3-drc-all.json`, so it is a claim on
 # the record rather than whatever the last local run happened to leave behind:
 # !rev3-drc-all.json
 

@@ -142,7 +142,7 @@ def stamp(doc_path, board_path, write=False):
                 "error: %s carries no `board-digest:` line to re-stamp\n"
                 "  fix: add one (a comment or a footer is fine):\n"
                 "       <!-- board-digest: %s -->" % (doc_path, sha))
-        return "unstamped", ("no `board-digest:` line — this document is not "
+        return "unstamped", ("no `board-digest:` line: this document is not "
                             "tied to any board revision; the board is %s"
                             % sha[:12])
     stamped = found.group(2).lower()
@@ -154,7 +154,7 @@ def stamp(doc_path, board_path, write=False):
             fh.write(_STAMP.sub(lambda m: m.group(1) + sha[:len(stamped)],
                                 text, count=1))
         return "wrote", "re-stamped %s -> %s" % (stamped, sha[:len(stamped)])
-    return "stale", ("stamp %s but %s is %s — this document describes a board "
+    return "stale", ("stamp %s but %s is %s: this document describes a board "
                      "that no longer\n              exists. RE-READ it against "
                      "the current board, then re-stamp with --write."
                      % (stamped, os.path.basename(board_path),

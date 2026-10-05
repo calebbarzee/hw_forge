@@ -158,7 +158,19 @@ board coordinates instead (`cavity=v.rect(...)`, `floor_z=`, `ceiling_z=`,
                       outside the case.  An opening on the wrong wall fails,
                       because the probe then runs into the right one.  A
                       connector with no mating record fails: an opening that
-                      was never declared cannot be checked.
+                      was never declared cannot be checked.  Each off-board
+                      part in the contract (`offboard[]`: a panel connector
+                      on a pigtail, a capsule on leads, placed in the case
+                      frame or relative to a named datum passed as
+                      `datums={name: (X, Y, Z)}`) is tested too: every body
+                      piece and the mated plug envelope, grown by its margin,
+                      meets no plastic and the plug ends outside the case
+                      (solid), or the declared hole clears the largest piece
+                      crossing the wall (numeric, `openings={ref: {"face":
+                      ..., "hole_d": ...}}`).  With `frame=` its pigtail is a
+                      number: the straight line from the board pads to the
+                      panel tail plus the stated slack must not exceed the
+                      stated length.
   min_wall            the thinnest local wall of one solid, by casting a ray
                       inward from sample points on every face, holds a floor
                       (MIN_WALL_MM, references/mechanical.md §5).  Samples sit
@@ -216,6 +228,13 @@ def load_contract(source):
         return source
     with open(source) as fh:
         return json.load(fh)
+
+
+def _xyz(vec):
+    """(X, Y, Z) of a build123d Vector.  `Vector.to_tuple()` is gone in
+    build123d 0.13 (measured 2026-10-04); the X, Y, Z attributes are in
+    every version."""
+    return (vec.X, vec.Y, vec.Z)
 
 
 def _b3d():
@@ -559,7 +578,10 @@ class Suite(object):
         out = []
         for i, shell in enumerate(shells):
             try:
-                vol = (solid & shell).volume
+                got = solid & shell
+                # build123d 0.13 returns None for an empty intersection
+                # (measured 2026-10-04); older versions an empty shape.
+                vol = 0.0 if got is None else got.volume
             except Exception:                          # pragma: no cover
                 vol = float("nan")
             if not vol <= CONTACT_VOLUME:              # catches nan too
@@ -571,7 +593,7 @@ class Suite(object):
         for shell in shells:
             try:
                 got = solid & shell
-                if got.volume > CONTACT_VOLUME:
+                if got is not None and got.volume > CONTACT_VOLUME:
                     c = got.center()
                     return " at (%.2f, %.2f, %.2f)" % (c.X, c.Y, c.Z)
             except Exception:                          # pragma: no cover
@@ -748,7 +770,7 @@ class Suite(object):
     def connector_openings(self, fit, shells=None, frame=None,
                            margin=FIT_MARGIN, reach=PROBE_REACH,
                            shell_names=None, openings=None, exempt=None,
-                           tol=TOL):
+                           datums=None, tol=TOL):
         """Every external mating face has a clear path out through its wall.
 
         Solid: a probe the width of the part's envelope plus `margin` on each
@@ -757,6 +779,9 @@ class Suite(object):
         face) and must meet no plastic and end outside every shell.  Numeric:
         `openings={ref: {"wall": "east", "span": (a, b), "z": (z0, z1)}}`,
         board frame, must contain the contract's span and z band plus margin.
+
+        Off-board parts (`fit["offboard"]`) are checked by `_offboard`, in
+        the case frame; `datums` resolves a record's named datum.
         """
         if not fit:
             return False
@@ -801,11 +826,11 @@ class Suite(object):
             hits = self._hits(solid, shells)
             # The far end must be outside the case's overall box: a probe
             # that stops in another internal pocket found no opening.
-            lo = [min(sh.bounding_box().min.to_tuple()[k] for sh in shells)
+            lo = [min(_xyz(sh.bounding_box().min)[k] for sh in shells)
                   for k in range(3)]
-            hi = [max(sh.bounding_box().max.to_tuple()[k] for sh in shells)
+            hi = [max(_xyz(sh.bounding_box().max)[k] for sh in shells)
                   for k in range(3)]
-            end = outer.to_tuple()
+            end = _xyz(outer)
             outside = any(end[k] < lo[k] - tol or end[k] > hi[k] + tol
                           for k in range(3))
             face = m.get("face_body") or {}
@@ -821,10 +846,141 @@ class Suite(object):
                         "" if outside else "; the probe ends INSIDE the case "
                         "(no opening through the wall, or raise reach=)"),
                 name="%s has a clear opening" % ref)
+        for rec in fit.get("offboard") or []:
+            seen += 1
+            if self._exempt("opening", rec["ref"], exempt):
+                continue
+            ok_all &= self._offboard(rec, shells, frame, b3d, openings or {},
+                                     datums or {}, shell_names, tol)
         if not seen:
             self.check(True, "connector openings: no external mating face in "
                              "the contract", name="connector openings")
         return ok_all
+
+    @staticmethod
+    def _offboard_origin(rec, datums):
+        """(origin [X, Y, Z] case frame, None) or (None, why)."""
+        at = list(rec.get("at") or [])
+        if len(at) != 3:
+            return None, "no mounting point (at)"
+        if rec.get("datum"):
+            d = datums.get(rec["datum"])
+            if d is None:
+                return None, ("datum %r not given; pass datums={%r: (X, Y, "
+                              "Z)}" % (rec["datum"], rec["datum"]))
+            at = [at[k] + float(d[k]) for k in range(3)]
+        return at, None
+
+    @staticmethod
+    def _piece_size(seg):
+        return seg["d"] if "d" in seg else max(seg["w"], seg["h"])
+
+    def _segment_solid(self, b3d, origin, axis, up, seg, grow):
+        """A segment of an off-board body as a build123d solid, case frame."""
+        z0, z1 = seg["z"]
+        base = [origin[k] + axis[k] * z0 for k in range(3)]
+        length = z1 - z0
+        if "d" in seg:
+            plane = b3d.Plane(origin=b3d.Vector(*base),
+                              z_dir=b3d.Vector(*axis))
+            return b3d.Solid.make_cylinder(seg["d"] / 2.0 + grow, length,
+                                           plane=plane)
+        xdir = (up[1] * axis[2] - up[2] * axis[1],
+                up[2] * axis[0] - up[0] * axis[2],
+                up[0] * axis[1] - up[1] * axis[0])
+        w, h = seg["w"] + 2 * grow, seg["h"] + 2 * grow
+        corner = [base[k] - xdir[k] * w / 2.0 - up[k] * h / 2.0
+                  for k in range(3)]
+        plane = b3d.Plane(origin=b3d.Vector(*corner),
+                          x_dir=b3d.Vector(*xdir), z_dir=b3d.Vector(*axis))
+        return b3d.Solid.make_box(w, h, length, plane=plane)
+
+    def _offboard(self, rec, shells, frame, b3d, openings, datums,
+                  shell_names, tol):
+        """Opening and pigtail checks for one off-board record."""
+        ref = rec["ref"]
+        label = "%s off-board %s" % (ref, rec.get("what") or "part")
+        name = "%s has a clear off-board opening" % ref
+        origin, why = self._offboard_origin(rec, datums)
+        if origin is None or not rec.get("axis") or not rec.get("segments"):
+            return self.check(False, "%s: cannot be checked (%s)"
+                              % (label, why or "no axis or no segments"),
+                              name=name)
+        axis, margin = rec["axis"], rec.get("margin_mm", FIT_MARGIN)
+        through = [g for g in rec["segments"]
+                   if not g["mated"] and g["z"][0] < 0.0 <= g["z"][1]]
+        ok = True
+        if shells is None:
+            got = openings.get(ref)
+            if not got:
+                ok &= self.check(False, "%s: the case declares no opening "
+                                        "(openings={%r: {\"face\": %r, "
+                                        "\"hole_d\": ...}})"
+                                 % (label, ref, rec.get("face")), name=name)
+            elif not through:
+                ok &= self.check(False, "%s: no segment crosses the wall "
+                                        "(z lo < 0 <= z hi), so there is no "
+                                        "hole size to check" % label,
+                                 name=name)
+            else:
+                need = max(self._piece_size(g) for g in through) + 2 * margin
+                hole = float(got.get("hole_d") or 0.0)
+                face_ok = got.get("face") in (None, rec.get("face"))
+                ok &= self.check(
+                    face_ok and hole - need >= -tol,
+                    "%s opening on %s (need %s): hole %.3f mm, needs %.3f "
+                    "(largest piece crossing the wall %.3f + 2 x %.3f "
+                    "margin): %.3fmm to spare"
+                    % (label, got.get("face") or "?", rec.get("face") or "?",
+                       hole, need, need - 2 * margin, margin, hole - need),
+                    name=name)
+        else:
+            lo = [min(_xyz(sh.bounding_box().min)[k] for sh in shells)
+                  for k in range(3)]
+            hi = [max(_xyz(sh.bounding_box().max)[k] for sh in shells)
+                  for k in range(3)]
+            for seg in rec["segments"]:
+                solid = self._segment_solid(b3d, origin, axis, rec["up"],
+                                            seg, margin)
+                hits = self._hits(solid, shells)
+                tip = [origin[k] + axis[k] * seg["z"][1] for k in range(3)]
+                outside = (not seg["mated"]) or any(
+                    tip[k] < lo[k] - tol or tip[k] > hi[k] + tol
+                    for k in range(3))
+                ok &= self.check(
+                    not hits and outside,
+                    "%s %s (z %.2f..%.2f, %s +%.3f margin) meets %s%s"
+                    % (label, seg["name"], seg["z"][0], seg["z"][1],
+                       "d %.2f" % seg["d"] if "d" in seg
+                       else "%.2f x %.2f" % (seg["w"], seg["h"]), margin,
+                       ", ".join("%s (%.3f mm^3)"
+                                 % (self._shell_name(shells, shell_names, i),
+                                    v) for i, v in hits) or "no plastic",
+                       "" if outside else "; the mated plug ends INSIDE "
+                       "the case"),
+                    name="%s %s clears the case" % (ref, seg["name"]))
+        pig = rec.get("pigtail")
+        if pig:
+            pname = "%s pigtail reaches" % ref
+            if frame is None or not rec.get("pads_xy"):
+                ok &= self.check(False, "%s pigtail: cannot be checked (%s)"
+                                 % (ref, "needs frame= to map the board pads "
+                                         "into the case frame" if frame is None
+                                    else "no pads on the board"), name=pname)
+            else:
+                pad = frame(rec["pads_xy"][0], rec["pads_xy"][1], 0.0)
+                tail = [origin[k] + axis[k] * pig["to_z"] for k in range(3)]
+                dist = math.sqrt(sum((pad[k] - tail[k]) ** 2
+                                     for k in range(3)))
+                need = dist + pig["slack_mm"]
+                ok &= self.check(
+                    pig["length_mm"] - need >= -tol,
+                    "%s pigtail: pads %s to the panel tail, straight line "
+                    "%.1f mm + %.1f slack = %.1f mm; stated %.1f mm: %.1fmm "
+                    "to spare" % (ref, rec["pads"], dist, pig["slack_mm"],
+                                  need, pig["length_mm"],
+                                  pig["length_mm"] - need), name=pname)
+        return ok
 
     def _probe(self, b3d, frame, part, margin, reach):
         """(probe solid, its outer end point) for one mating part."""

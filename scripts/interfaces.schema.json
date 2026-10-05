@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "hw_forge.interface",
   "title": "hw_forge interface definition",
-  "description": "One standardized connector interface, as kicad_ifcheck.py checks it. A definition lives in scripts/interfaces/<id>.json, or as a fenced ```json block inside kb/interfaces/<card>.md whose object carries \"schema\": \"hw_forge.interface\". Rule ids are transcribed from skills/hw-design/references/interfaces.md, which is the human-readable source; this file is the machine-readable form of those tables. Version 1: add keys, never rename or re-mean one.",
+  "description": "One standardized connector interface, as kicad_ifcheck.py checks it. A definition lives in scripts/interfaces/<id>.json or PROJECT/interfaces/<id>.json, or as a fenced ```json block inside kb/interfaces/<card>.md or PROJECT/kb/interfaces/<card>.md whose object carries \"schema\": \"hw_forge.interface\". The first definition of an id wins, in that order: shipped, knowledge-base roots, project. Rule ids are transcribed from skills/hw-design/references/interfaces.md, which is the human-readable source; this file is the machine-readable form of those tables. Version 1: add keys, never rename or re-mean one.",
   "type": "object",
   "required": ["schema", "version", "id", "title", "reference", "roles", "rules"],
   "additionalProperties": false,
@@ -51,16 +51,17 @@
           "id": {"type": "string", "description": "Rule id from the reference's table, e.g. UC-DEV-01."},
           "kind": {
             "enum": ["connected", "same_net", "distinct_nets", "net_pattern", "net_not_pattern",
-                     "passive_to", "no_passive_to", "part_on_net", "manual"],
-            "description": "connected: every pin of `roles` sits on a net with another node. same_net: all pins of each role in `roles` share one net. distinct_nets: the roles in `roles` are on pairwise different nets. net_pattern / net_not_pattern: the role's net does / does not match `pattern` (\"ground\" means ground_pattern). passive_to: for each role in `roles`, exactly `count` parts whose ref prefix is in `prefixes` have one pin on the role's net and another on `to_role`'s net (or a ground net when to_role is \"ground\"), with value inside value_ohms/value_farads x (1 +/- tolerance). no_passive_to: no such part exists. part_on_net: at least one such part exists for each role, any value. manual: a review step with no script; reported as MANUAL, never PASS."
+                     "passive_to", "no_passive_to", "part_on_net", "part_to_net", "manual"],
+            "description": "connected: every pin of `roles` sits on a net with another node. same_net: all pins of each role in `roles` share one net. distinct_nets: the roles in `roles` are on pairwise different nets. net_pattern / net_not_pattern: the role's net does / does not match `pattern` (\"ground\" means ground_pattern). passive_to: for each role in `roles`, exactly `count` parts whose ref prefix is in `prefixes` have one pin on the role's net and another on `to_role`'s net (or a ground net when to_role is \"ground\"), with value inside value_ohms/value_farads x (1 +/- tolerance). no_passive_to: no such part exists. part_on_net: at least one such part exists for each role, any value. part_to_net: for each role in `roles`, parts whose ref prefix is in `prefixes` with one pin on the role's net and another on a net that is neither ground nor any role's net, narrowed by `to_net` when given (an electret load resistor to a bias rail, a series build-out resistor); exactly `count` when given, else at least one, each inside value_ohms/value_farads x (1 +/- tolerance) when given. manual: a review step with no script; reported as MANUAL, never PASS."
           },
           "roles": {"type": "array", "items": {"type": "string"}},
           "to_role": {"type": "string"},
-          "prefixes": {"type": "array", "items": {"type": "string"}},
+          "to_net": {"type": "string", "description": "part_to_net only: regex (Python re, case-insensitive, searched in the net name with any sheet path removed) naming the far net. Ground nets and role nets never match."},
+          "prefixes": {"type": "array", "items": {"type": "string"}, "description": "Reference prefixes a passive kind counts. Absent: passives only (R, C, L, D, FB). Do-not-populate parts never count."},
           "value_ohms": {"type": "number"},
           "value_farads": {"type": "number"},
           "tolerance": {"type": "number", "minimum": 0},
-          "count": {"type": "integer", "minimum": 1},
+          "count": {"type": "integer", "minimum": 0, "description": "Exact number of parts; 0 means none may exist. Passive kinds only. Each part counts once."},
           "pattern": {"type": "string"},
           "severity": {"enum": ["FAIL", "WARN"], "default": "FAIL"},
           "text": {"type": "string", "description": "The rule sentence from the reference table."}

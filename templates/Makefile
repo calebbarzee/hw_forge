@@ -1,7 +1,12 @@
 # <PROJECT>: KiCad-native build and validation loop.
+# hw_forge Makefile template version: 2
 #
 # Copy this into your project and fill in the "project configuration" block.
-# Everything below that line is generic.
+# Everything below that line is generic.  Keep the version line above: it
+# is how `preflight.py --project` (and the review's preflight row) tells a
+# project Makefile copied from an older template, and prints the diff
+# command against the shipped one.  Bump it in templates/Makefile whenever
+# a target or a generic rule changes.
 #
 #   make            regenerate every target, then validate all of them
 #   make <name>     regenerate one target
@@ -94,12 +99,17 @@ BOARDS    := <board_a> <board_b>
 # hwforge-overrides.json, and `--repatch` restores all of it after SaveBoard.)
 SCAFFOLD  :=
 
-# Enclosure checks file, if this project has one (leave empty to skip).
-CASE_CHECKS := case/checks.py
+# Enclosure checks file.  Default: case/checks.py beside this Makefile, else
+# ../case/checks.py, which is where the SKILL.md layout puts it when this
+# Makefile lives in PROJECT/kicad/.  A relative path is relative to this
+# Makefile; an absolute one is used as is.  Set it empty to skip the case.
+CASE_CHECKS ?= $(firstword $(wildcard $(HERE)case/checks.py \
+                                      $(HERE)../case/checks.py))
 # The python the computer-aided design (CAD) library lives in.  case_verify.py
 # is pure stdlib, but a real suite asserts valid solids and printability, which
-# need build123d.
-CASE_PY   := case/.venv/bin/python
+# need build123d.  Default: the .venv beside the checks file.  Relative to
+# this Makefile, or absolute (a shared or borrowed venv).
+CASE_PY   ?= $(if $(CASE_FILE),$(dir $(CASE_FILE)).venv/bin/python)
 
 # Where the hw_forge scripts live.  A plugin install is the first default; a
 # development checkout is the second.  Override on the command line or in the
@@ -120,6 +130,14 @@ PY    := python3
 
 HERE  := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SCRIPTS := $(HW_FORGE)/scripts
+# The generators import scripts/hw_stamp.py through this (templates/design.py,
+# "Generated-file stamp"), so the board and schematic carry design.py's hash.
+export HW_FORGE_SCRIPTS := $(SCRIPTS)
+
+# A path as given when absolute, else relative to this Makefile.
+ABS = $(if $(filter /%,$(1)),$(1),$(HERE)$(1))
+CASE_FILE   = $(if $(strip $(CASE_CHECKS)),$(call ABS,$(strip $(CASE_CHECKS))))
+CASE_PYTHON = $(if $(strip $(CASE_PY)),$(call ABS,$(strip $(CASE_PY))))
 
 # Every kicad-cli / pcbnew invocation on some installs prints a wall of
 # `Fontconfig warning:` and `wxApp` noise to stderr before its real output.
@@ -173,6 +191,11 @@ install-tools:
 # One target per board.  The schematic emitter runs under system python; the
 # board emitter runs under KiCad's bundled python because it imports pcbnew.
 # design.py must import cleanly under both, which is why it stays pure python.
+# The last step stamps both files with one hash of design.py, gen_sch.py and
+# gen_pcb.py (hw_stamp.py --also), so an edit to a generator alone also reads
+# as stale.  `make review`'s first row fails a board or schematic whose stamp
+# is missing or stale.  A generator may stamp its own output too (found
+# through HW_FORGE_SCRIPTS); this step overwrites that stamp.
 #
 # Order matters: schematic, then scaffold (library tables + .kicad_pro), then
 # board.  The generator's own save wipes the .kicad_pro, so it re-patches
@@ -184,6 +207,8 @@ $(1):
 	$$(PY) $$(SCRIPTS)/kicad_scaffold.py $$($(1)_AT) $$($(1)_NAME) $$(SCAFFOLD)
 	$$(KPY) $$(HERE)gen_pcb.py --out $$($(1)_AT)$$($(1)_NAME).kicad_pcb $$($(1)_FLAGS) $$(DENOISE)
 	$$(PY) $$(SCRIPTS)/kicad_scaffold.py $$($(1)_AT) --repatch
+	$$(PY) $$(SCRIPTS)/hw_stamp.py $$($(1)_AT)$$($(1)_NAME).kicad_sch $$($(1)_AT)$$($(1)_NAME).kicad_pcb \
+	  --design $$(HERE)design.py --also $$(HERE)gen_sch.py --also $$(HERE)gen_pcb.py --write
 endef
 $(foreach t,$(TARGETS),$(eval $(call GEN_RULE,$(t))))
 
@@ -389,8 +414,8 @@ review-$(1):
 	@$$(PY) $$(SCRIPTS)/hw_review.py $$($(1)_AT) --name $$($(1)_NAME) \
 	  --design $$(HERE)design.py \
 	  $$(if $$(SCHRULES_FILE),--rules $$(SCHRULES_FILE),) \
-	  $$(if $$(wildcard $$(HERE)$$(CASE_CHECKS)),--case $$(HERE)$$(CASE_CHECKS),) \
-	  $$(if $$(wildcard $$(HERE)$$(CASE_PY)),--case-python $$(HERE)$$(CASE_PY),) \
+	  $$(if $$(wildcard $$(CASE_FILE)),--case $$(CASE_FILE),) \
+	  $$(if $$(wildcard $$(CASE_PYTHON)),--case-python $$(CASE_PYTHON),) \
 	  $$(if $$(wildcard $$($(1)_AT)fab-profile.json),--fab $$($(1)_AT)fab-profile.json,) \
 	  $$(if $$(BOM_ASSEMBLY),--assembly $$(BOM_ASSEMBLY),)
 endef
@@ -465,12 +490,12 @@ $(foreach b,$(BOARDS),$(eval $(call RENDER_RULE,$(b))))
 # proto-only or case-only tree) has no contract, so `make case` then runs the
 # checks file alone.
 
-CASE_RUN = $(if $(wildcard $(HERE)$(CASE_PY)),$(HERE)$(CASE_PY),$(PY)) \
-  $(SCRIPTS)/case_verify.py $(HERE)$(CASE_CHECKS)
+CASE_RUN = $(if $(wildcard $(CASE_PYTHON)),$(CASE_PYTHON),$(PY)) \
+  $(SCRIPTS)/case_verify.py $(CASE_FILE)
 
-ifeq ($(strip $(CASE_CHECKS)),)
+ifeq ($(strip $(CASE_FILE)),)
 case:
-	@echo "no CASE_CHECKS configured, skipping"
+	@echo "no CASE_CHECKS configured or found (case/checks.py, ../case/checks.py), skipping"
 else ifeq ($(strip $(BOARDS)),)
 case:
 	@$(CASE_RUN)

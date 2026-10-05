@@ -36,7 +36,28 @@ context than you had.
 
 ## 2. Wave sequencing
 
-The question that decides everything: **do these agents write the same files?**
+**Who may run waves.** The hw-design orchestrator runs as the top-level
+session. When a run must be delegated, the delegate dispatches phase agents in
+the foreground, one wave at a time. The reason: a subagent cannot wait for its
+own background agents: the harness ends it when its turn ends, and their results never reach
+it. Measured 2026-10-03 (`hypercardiod_mic/GAPS.md` #18): the mic run's
+orchestrator was ended at phase 0 while two phase 1 research agents were still
+running; their reports arrived at the top-level session instead, and the wave
+could not complete.
+
+- Top-level orchestrator: dispatches a wave in one message with
+  `run_in_background` true, as the rules below describe, and receives each
+  report as it finishes.
+- A session that must delegate a whole run: the delegate dispatches its phase
+  agents in the foreground (`run_in_background` false), one wave at a time. Each
+  call returns that agent's report before the next dispatch. Waves are slower,
+  because agents that would run in parallel run one after another. The
+  disjoint-subtree and gate rules below still apply unchanged.
+- Parallel fan-out (the phase 1 split and the implementation fan-out below) is
+  reserved for the top-level orchestrator.
+
+The question that decides which agents may share a wave: **do these agents write
+the same files?**
 
 **Sequential when they share generator files.** Two agents editing the same
 `gen_pcb.py` will clobber each other. Worse, each will gate against a tree the
@@ -105,9 +126,9 @@ wave 1   resource-scout (LED chain) ‖ resource-scout (display) ‖
          merge the fragments into lib/PROVENANCE.md
 wave 2   schematic-engineer                  (design.py + schematic + power doc)
   gate   you run kicad_gate.py: ERC 0
-wave 3   pcb-engineer  — variant A           (shares gen_pcb.py → sequential)
+wave 3   pcb-engineer, variant A             (shares gen_pcb.py → sequential)
   gate   you run kicad_gate.py: DRC 0 + parity, 0 unconnected
-wave 4   pcb-engineer  — variant B           (inherits A's handoff)
+wave 4   pcb-engineer, variant B             (inherits A's handoff)
   gate   same, on both variants (A must not have regressed)
 wave 5   fab-docs-engineer ‖ case-engineer    (disjoint subtrees → parallel)
   gate   fab assertions pass; case_verify.py all-pass
@@ -156,7 +177,7 @@ block you get prose, and the next agent inherits nothing.
 Paste this structure into every prompt:
 
 ```
-LOCKED DECISIONS — do not relitigate, do not silently deviate
+LOCKED DECISIONS: do not relitigate, do not silently deviate
   - <decision, verbatim>
   - <decision, verbatim>
 
@@ -167,7 +188,7 @@ design, STOP and return:
   BARRIER
   Blocked:         what cannot be done, and which gate it fails
   Locked decision: the exact decision in conflict
-  Why:             the mechanism, with evidence — violation counts, measured
+  Why:             the mechanism, with evidence: violation counts, measured
                    clearances, the report file and record that shows it
   Options:         A / B / C, each with cost and what it gives up
   Recommendation:  which, and why
@@ -271,9 +292,9 @@ Genericised from a proving run. Real prompts are longer, mostly because block
 ```
 ROLE  pcb-engineer. Route the B variant of <board> to the gate.
 
-(a) STATE YOU INHERIT — verified
+(a) STATE YOU INHERIT: verified
   - kicad/gen_pcb.py emits both variants from design.py. Variant A is DONE and
-    gated: I re-ran `python3 scripts/kicad_gate.py kicad/a` — DRC 0 error
+    gated: I re-ran `python3 scripts/kicad_gate.py kicad/a`: DRC 0 error
     severity with schematic parity, 0 unconnected, 101 footprints, 421 tracks /
     102 vias.
   - Variant B currently reports 21 DRC violations, all inside the module corner.
@@ -285,10 +306,10 @@ ROLE  pcb-engineer. Route the B variant of <board> to the gate.
     "across" values therefore land on the physically wrong side.
   - Named constants: BAND_N/BAND_S/CORRIDOR_Y in gen_pcb.py:210-240 (current
     values quoted below); mcu_xy() at :188 carries the sign for PART positions
-    and is correct — do not "fix" it.
+    and is correct; do not "fix" it.
   - KB cards recalled: kicad/zones-island-removal, electronics/mirroring-traps.
 
-(b) LOCKED DECISIONS — do not relitigate, do not silently deviate
+(b) LOCKED DECISIONS: do not relitigate, do not silently deviate
   - Two separate boards, not one reversible board.
   - <n> layers. No autorouter. Zones filled headlessly inside the generator.
   - Module position and outer-edge overhang as specified in DECISIONS.md §2.
@@ -297,7 +318,7 @@ ROLE  pcb-engineer. Route the B variant of <board> to the gate.
 (c) DEFINITION OF DONE
   `python3 scripts/kicad_gate.py kicad/b` reports ERC 0, DRC 0 at error
   severity with --schematic-parity, 0 unconnected. Variant A must still pass
-  unchanged — re-run it before reporting. No hand edits to the .kicad_pcb;
+  unchanged; re-run it before reporting. No hand edits to the .kicad_pcb;
   every change is in the generator, as a named constant where possible.
 
 (d) REPORT SHAPE
@@ -309,7 +330,7 @@ ROLE  pcb-engineer. Route the B variant of <board> to the gate.
 ```
 ROLE  case-engineer. Build the printed enclosure for the gated board.
 
-(a) STATE YOU INHERIT — verified
+(a) STATE YOU INHERIT: verified
   - Boards are final and gated (0/0/0/0 on both variants, re-verified by me).
   - Geometry read from the board files, not the spec:
     `python3 scripts/kicad_geom.py kicad/a/<board>.kicad_pcb --json` →
@@ -321,18 +342,18 @@ ROLE  case-engineer. Build the printed enclosure for the gated board.
     ledger input; extend it, do not replace it.
   - KB cards recalled: mechanical/heat-set-inserts, mechanical/fdm-plate-down.
 
-(b) LOCKED DECISIONS — do not relitigate, do not silently deviate
+(b) LOCKED DECISIONS: do not relitigate, do not silently deviate
   - M2 heat-set inserts at the board's own hole positions; screws from below.
   - Two shells, FDM, support-free in the stated print orientations.
   - Cell: <spec>, one per assembly.
   [barrier clause verbatim]
 
 (c) DEFINITION OF DONE
-  `python3 scripts/case_verify.py case/<name>.py` — every check passes,
+  `python3 scripts/case_verify.py case/<name>.py`: every check passes,
   including: standoff/boss clearance to EVERY component in the ledger; insert
   bore wall >= 1.2mm; computed screw length printed and matched to the BOM;
   both shells valid single solids; nothing proud of the print reference face.
-  Add checks for anything you had to reason about — a number you proved on
+  Add checks for anything you had to reason about: a number you proved on
   paper and did not assert is a number that will drift.
 
 (d) REPORT SHAPE
@@ -343,6 +364,7 @@ ROLE  case-engineer. Build the printed enclosure for the gated board.
 
 | Failure | What it produces |
 |---|---|
+| Orchestrator run as a subagent with background agents | The harness ends the subagent at its turn end. Its background agents' reports go to the top-level session, the wave never completes, and the run stops mid-phase. Run the orchestrator at the top level, or dispatch in the foreground one wave at a time (section 2). |
 | Prompt without recon | The agent spends its budget rediscovering facts you already had, and asserts a wrong one. |
 | Missing locked-decisions block | Silent deviation on a settled question. |
 | Gate stated as a quality rather than a number | "Done" means whatever the agent decided. |

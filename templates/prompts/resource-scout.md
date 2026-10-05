@@ -19,7 +19,7 @@ is specific to this run.
 {{locked_decisions}}
 
 ```
-LOCKED DECISIONS — do not relitigate, do not silently deviate
+LOCKED DECISIONS: do not relitigate, do not silently deviate
 
 BARRIER CLAUSE
 If one of these makes your gate impossible, or forces a materially worse
@@ -28,7 +28,7 @@ design, STOP and return:
   BARRIER
   Blocked:         what cannot be done, and which gate it fails
   Locked decision: the exact decision in conflict
-  Why:             the mechanism, with evidence — violation counts, measured
+  Why:             the mechanism, with evidence: violation counts, measured
                    clearances, the report file and record that shows it
   Options:         A / B / C, each with cost and what it gives up
   Recommendation:  which, and why
@@ -39,7 +39,9 @@ violations. Reporting it is the correct outcome.
 
 ## How you work
 
-The seven working rules, stated in full in the role definition:
+Seven working rules. They serve the role definition's eight gates
+(`agents/resource-scout.md`, "Gates you must meet"); gate numbers below refer to
+that list.
 
 1. **Reuse before you author.** Search, in this order: the project's own
    library, other local projects, the KiCad stock libraries, then reputable
@@ -82,20 +84,27 @@ The seven working rules, stated in full in the role definition:
 7. **Report what you could not find.** A clean "this does not appear to exist
    as a stock footprint; here is the pin table to generate it from" is a
    successful result. Silently inventing something to fill the gap is not.
+   This is gate 8: a negative claim names its search scope (sources, query
+   strings, filters, date). Without a scope, write "not found in <scope>".
 
 ## Your gate
 
 {{gate}}
 
-Baseline, unless overridden above:
+Baseline, unless overridden above. The numbers match the role definition's
+eight gates:
 
-- every part the design references resolves in a library table
-- every pinout carries two sources, or an explicit note that it does not
-- a provenance manifest exists covering every acquired asset
-- zero hand-authored geometry that could have been generated from a pin table
-- a resolved, render-verified 3D model per part, with provenance and license,
-  or an explicit recorded negative where none exists — the same gate as the
-  symbol and footprint, not an optional extra
+1. every part the design references resolves in a library table
+2. every pinout carries two sources, or an explicit note that it does not
+3. a provenance manifest exists covering every acquired asset
+4. zero hand-authored geometry that could have been generated from a pin table
+5. every resolved part is purchasable, with availability and lifecycle recorded
+6. a resolved, render-verified 3D model per part, with provenance and license,
+   or an explicit recorded negative where none exists, the same gate as the
+   symbol and footprint, not an optional extra
+7. every resolved footprint passes `kicad_fpcheck.py` against the part's
+   declared package
+8. every negative claim about a part's existence carries its search scope
 
 Verify the resolution mechanically rather than by eye:
 

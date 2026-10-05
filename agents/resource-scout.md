@@ -119,13 +119,32 @@ time. Do not leave the reader to infer it from the citation.
 
 ### When the primary source is an image
 
-Vendor pinout pages routinely carry the actual pin table as a PNG image, and
-your tools cannot view one. WebFetch converts HTML to markdown and does not
-perform optical character recognition.
+Vendor pinout pages and drawings routinely carry the actual pin table or
+dimensions as an image. WebFetch converts HTML to markdown and does not perform
+optical character recognition, so a figure inside a fetched page is not read.
+Two tools do read an image:
 
-The accepted fallback is a procedure, not improvisation: find **two
-independently-authored derived assets that both cite that image**, such as two
-separately-maintained footprints, or a footprint and a firmware overlay.
+- The Read tool displays PNG and JPEG files.
+- `pdftoppm` (installed) renders a PDF page to PNG at a chosen resolution:
+  `pdftoppm -r 400 -f PAGE -l PAGE -png FILE.pdf OUTPREFIX`, then Read the PNG.
+  The mic run read the JLI-2555BXZ3-GP capsule drawing this way at 400 dpi
+  (`hypercardiod_mic/lib/research/offboard-connectors.md`).
+
+Text extraction (`pdftotext -layout`) interleaves the columns of a multi-column
+table, so read the page image for tables (`references/sourcing.md`).
+
+**A dimension scaled off a raster carries a stated tolerance.** Calibrate
+against a dimensioned length on the same drawing and record the band. The mic
+run used plus or minus 0.15 to 0.2 mm at 400 dpi against the known 26 mm
+outside diameter. Mark each such value "scaled" in the provenance row and the
+report, and each printed value "dimensioned", so the next phase knows which
+numbers carry the band.
+
+**When no image is available to you** (no page can be rendered, or the file is
+a bitmap you cannot fetch) the accepted fallback is a procedure, not
+improvisation: find **two independently-authored derived assets that both cite
+that image**, such as two separately-maintained footprints, or a footprint and a
+firmware overlay.
 
 Then flag inline, in the provenance row and in the report, that neither was
 checked against the primary. That is agreement between two transcriptions, not
@@ -262,6 +281,19 @@ next phase.
    finding requires, and where a card exists for the same part it points at
    the fork and the provenance row rather than repeating the numbers.
 
+8. **A negative claim about a part's existence carries its search scope.**
+   "No through-hole low-noise dual op-amp exists in this price class" is a
+   claim, not a finding, until it names what was searched: the distributors,
+   the query strings, the filters, and the date. This is the scoped-negative
+   rule in `kb/README.md`, repeated here because the scout is where the claim
+   is made. Measured counterexample: the mic run's phase 1 research stated that
+   negative, and NE5532P in DIP-8 is a through-hole low-noise dual op-amp
+   (`hypercardiod_mic/GAPS.md` #10). No gate or review challenged it. Before
+   writing "none exists", search by function and package family in at least two
+   sources, including a parametric search on the package, and record the scope
+   so a reader can re-test the negative. Without a scope, write "not found in
+   <scope>", not "does not exist".
+
 ## Traps to actively check for
 
 - **Variant pin-order divergence.** Same part family, different suffix,
@@ -331,7 +363,7 @@ Asset:       what it is, and which phase needs it
 Exists:      the sources that confirm it, ideally independent ones
 Blocked by:  the exact mechanism (login wall, click-through, JS-only portal)
 For a human: the exact URL and what to click, and where to put the file
-Meanwhile:   what the design does without it — a placeholder, a banded
+Meanwhile:   what the design does without it: a placeholder, a banded
              parameter, or a deferred check, named as such
 ```
 
@@ -410,12 +442,12 @@ REPORT
 Status:     every part in the spec, and whether it resolved
 Local:      what was found on this machine, by path
 Web:        what had to come from outside, with URLs
-Vendored:   each asset, with its full provenance row — 3D models included, each
+Vendored:   each asset, with its full provenance row, 3D models included, each
             with its bounding box and render verification; mechanically
             critical footprints with their package family and the two
             dimensions kicad_fpcheck.py checked; and whether it landed in
             kicad/lib/ (production) or lib/reference/ (evidence)
-Pin tables: each table, with the two sources that agreed — flagged where both
+Pin tables: each table, with the two sources that agreed, flagged where both
             are transcriptions of an image primary
 Availability: per part, lifecycle status, stock, and lead time; anything NRND,
             end-of-life or unstocked called out

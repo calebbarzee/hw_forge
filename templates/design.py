@@ -44,6 +44,34 @@ suggested one, because it matches most PCB layout tools' native frame:
 
 KiCad's board space is +y south.  Emitters convert at their own boundary: one
 conversion, in one function, on the way out.  Do not mix frames here.
+
+Generated-file stamp
+--------------------
+The schematic and the board carry this file's hash, so a board older than
+its design source fails the pre-order review instead of passing every gate
+(`hw_review.py`'s `fresh` row; measured: a design.py edited 28 minutes after
+its board was saved, and every gate ran on the old board).  The template
+Makefile's generation rule ends with `hw_stamp.py --write --also gen_sch.py
+--also gen_pcb.py`, so the hash also covers the generators.  A generator run
+outside make stamps its own output with these lines at its end, after the
+file is written:
+
+    scripts = os.environ.get("HW_FORGE_SCRIPTS") or next(
+        (d for d in (os.path.expanduser("~/.claude/plugins/hw_forge/scripts"),
+                     os.path.expanduser("~/1_projects/dev/hw_forge/scripts"))
+         if os.path.isfile(os.path.join(d, "hw_stamp.py"))), None)
+    if not scripts:
+        sys.exit("error: hw_forge scripts not found: run through make, or "
+                 "set HW_FORGE_SCRIPTS to the hw_forge/scripts directory")
+    sys.path.insert(0, scripts); import hw_stamp
+    hw_stamp.stamp_file(args.out, os.path.join(HERE, "design.py"))
+
+The fallback list is the Makefile's own HW_FORGE search (plugin install,
+then development checkout).  `scripts/hw_stamp.py` writes `hw_forge
+design-sha1: <hash>` as title-block comment 9 and refuses a comment 9 that
+holds other text; it survives `pcbnew.SaveBoard()` and is only read by
+kicad-cli.  `python3 scripts/hw_stamp.py BOARD SCH --design design.py`
+checks it by hand.
 """
 
 # =========================================================================
@@ -202,6 +230,20 @@ PACKAGES = {
     # "<value>": "<PackageFamilyId>",    # e.g. "W25Q128JVSIQ": "SOIC-8-W"
 }
 
+# Footprints the package check may leave unchecked, by reference, each with
+# the reason.  `hw_review.py`'s fpcheck row FAILs a part with copper pads
+# that no package entry covers (kicad_fpcheck.py reports it SKIP), because
+# an unchecked footprint is the incident above waiting to happen.  A waiver
+# here turns that FAIL into a WARN that prints the reason, so the review
+# still lists it under "not proven".  Prefer a PACKAGES entry (or a
+# packages-project.json family) to a waiver; waive only what no package
+# table can describe, and say who checked the footprint and how.
+FPCHECK_WAIVERS = {
+    # "<ref>": "<why no package entry, and how the footprint was checked>",
+    # e.g. "J1": "wire-solder pads, no body: pad pitch checked against the "
+    #            "pigtail's 0.5 sqmm conductor (lib/research/pigtail.md)",
+}
+
 
 # =========================================================================
 # Board-inherent kinds: geometry that is never a bill of materials (BOM) row
@@ -233,6 +275,23 @@ PACKAGES = {
 #   edge_connector  a card-edge connector formed by the board's own copper
 #                   and gold fingers, with no separate part to source
 #
+# One more kind lives in this table and is NOT board-inherent:
+#
+#   off_board       a pad set whose BOM row is the off-board part it
+#                   receives: wire-solder pads (Connector_Wire:SolderWire-*)
+#                   taking a panel connector's pigtail, a capsule's leads, a
+#                   battery's lead pair.  The part is bought, so the symbol
+#                   stays `(in_bom yes)` with every sourcing field below in
+#                   PARTS; nothing is machine-placed, so the footprint keeps
+#                   `exclude_from_pos_files`; and the footprint must NOT keep
+#                   `exclude_from_bom`, which stock SolderWire footprints
+#                   ship with: KiCad's parity check compares it with the
+#                   symbol's in_bom and fails footprint_symbol_mismatch.  The
+#                   board emitter clears it: fp.SetExcludedFromBOM(False).
+#                   An `offboard` block in PARTS (below) declares the same
+#                   kind, and a SolderWire footprint is taken as off_board
+#                   when neither table says otherwise.
+#
 # If a real component sits in one of these locations -- a mounting hole that
 # also carries a press-fit standoff, a test point that is actually a
 # populated pogo-pin header -- that location is a sourced part, not a
@@ -245,6 +304,7 @@ PACKAGES = {
 # caught, but an entry here always wins over the heuristic.
 BOARD_INHERENT = {
     # "<ref>": "mounting_hole",        # e.g. "H1": "mounting_hole"
+    # "<ref>": "off_board",            # e.g. "J1": pigtail pads, see above
 }
 
 # How the schematic emitter and the board emitter each act on BOARD_INHERENT,
@@ -376,6 +436,35 @@ BOARD_INHERENT = {
 #                 optional mating_z [lo, hi].
 #   ifcheck_exempt  optional {rule_id: reason} for an interface rule this
 #                 design deliberately does not meet; printed with the reason.
+#   offboard      optional, for a part that lives on the enclosure and is
+#                 wired to this row's pads: a panel connector on a pigtail, a
+#                 capsule on leads.  Its sourcing fields above describe the
+#                 off-board part (the GX16, the capsule), which is its BOM
+#                 row (kind off_board, see BOARD_INHERENT).  The block goes
+#                 into the fit contract's `offboard[]`, and
+#                 `case_verify.py connector_openings` tests the case opening
+#                 against the body and the mated plug, and the pigtail
+#                 length against the pad-to-panel distance:
+#       what      free text, e.g. "GX16-4 male panel socket"
+#       face      the enclosure face it mounts through, free text ("tail")
+#       axis      that face's outward normal in the CASE frame: "+x" ...
+#                 "-z" or [dx, dy, dz]
+#       at        [X, Y, Z], case frame: the opening's centre on the outer
+#                 surface; with `datum`, an offset from that named case
+#                 datum, which the case suite passes as
+#                 datums={"tail_wall": (X, Y, Z)}
+#       segments  the body as coaxial pieces along the axis: {name, z: [lo,
+#                 hi], d} for a round piece or {name, z, w, h} for a
+#                 rectangular one (h along `up`), with z = 0 on the outer
+#                 surface and positive outward; `mated: True` marks the mated
+#                 plug's envelope.  A piece with lo < 0 <= hi crosses the
+#                 wall, and the opening must clear it plus margin_mm.
+#       up        optional case-frame vector for a rectangular piece's h
+#       margin_mm optional clearance per side (default 0.30)
+#       pigtail   optional {length_mm, slack_mm, to_z}: the wire from the
+#                 pads must reach the panel tail (z = to_z, default the
+#                 innermost piece's end) with slack_mm to spare
+#       pads      optional ref of the pad set when it is not this row's ref
 #
 # The emitters write mating_direction, height_mm, interface and access onto
 # the footprint as properties of exactly those names as well.  The forked
@@ -421,6 +510,24 @@ PARTS = {
     #     "interface": "usb-c-device",
     #     "mating_direction": "+y",      # GCT USB4105: kb/interfaces/
     #     "height_mm": 3.31,             # datasheet body height
+    # },
+    # "<pad set ref>": {                 # e.g. "J1", pads for a GX16 pigtail
+    #     ...the sourcing fields, for the GX16 set itself...,
+    #     "interface": "pigtail-power-balanced-4",
+    #     "mating_direction": "+z", "access": "internal", "height_mm": 3.0,
+    #     "offboard": {
+    #         "what": "GX16-4 male panel socket", "face": "tail",
+    #         "axis": "+x", "datum": "tail_wall", "at": [0.0, 0.0, 0.0],
+    #         "segments": [
+    #             {"name": "thread and cups", "d": 16.0, "z": [-13.6, 0.0]},
+    #             {"name": "flange", "d": 19.0, "z": [0.0, 1.8]},
+    #             {"name": "nut", "d": 21.9, "z": [-6.4, -3.0]},
+    #             {"name": "mated plug", "d": 18.3, "z": [1.8, 32.6],
+    #              "mated": True},
+    #         ],
+    #         "margin_mm": 0.25,
+    #         "pigtail": {"length_mm": 120.0, "slack_mm": 20.0},
+    #     },
     # },
 }
 

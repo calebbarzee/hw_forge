@@ -852,15 +852,21 @@ solder side are mirrored relative to the mating face.
 
 | Item | Value | Source |
 |---|---|---|
-| Panel thread | M16 x 1 | `[S10]` |
-| Panel nut | Hexagon, 19 mm across flats | `[S10]` |
-| Coupling ring thread | M16 x 0.75 | `[S10]` |
-| Male connector length | 35.5 mm total | `[S10]` |
-| Maximum body diameter | 18.3 mm | `[S10]` |
-| Solder cup | 0.8 mm aperture, cable up to 5.0 mm diameter | `[S10]` |
-| Rating | 7 A at 125 V (4 pin) | `[S10]` |
-| Panel hole | not stated by the vendor; the project banded it 16.2 to 17.0 mm and used 16.5 mm | project report, NV |
-| Anti-rotation flat | none on the drawing read; some vendors cut flats on the thread | `[S10]` (NV for other vendors) |
+| Panel (socket rear) thread | M16 x 0.75 | Handson drawing label, single lineage; see `kb/interfaces/gx12-gx16.md` |
+| Socket front barrel and plug coupling ring thread | M16 x 1 | same |
+| Panel nut | Hexagon, about 19 mm across flats (18.8 to 19.0) | Handson, Olimex |
+| Flange OD | 19 mm | Handson |
+| Socket body behind the flange, tails included | 13.1 to 13.6 mm | Olimex, Handson (derived) |
+| Female cable plug length | 35.5 mm (Handson) or 34.8 mm (Olimex); this is the plug, not the socket | Handson, Olimex |
+| Coupling ring OD (plug) | 18.3 mm | Handson |
+| Solder cup | 0.8 mm aperture, cable up to 5.0 mm diameter | Handson |
+| Rating | 7 A at 125 V (4 pin) | Handson |
+| Panel hole | no maker states a drill size; banded 16.2 to 17.0 mm, 16.5 mm used | project report, NV |
+| Anti-rotation flat | none seen on two drawings; some vendors cut flats on the thread | `kb/interfaces/gx12-gx16.md` (NV for other vendors) |
+
+The earlier reading of this table gave 35.5 mm as the male connector length and
+swapped the thread assignment. The correction is recorded in
+`kb/interfaces/gx12-gx16.md` (2026-10-03).
 
 GX12: thread M12 x 1 by class name (NV), nut size, length, and rating all NV.
 
@@ -873,9 +879,9 @@ plastic lets the connector spin when the coupling ring is turned, which twists t
 cable inside. Use a flat or a D-profile in the hole if the thread has a flat, or print
 an anti-rotation key.
 
-Plug envelope: the mated pair is about 35.5 mm long behind the panel plus the mating
-half (NV: only the male connector length was read). Reserve the coupling ring's
-swing diameter, larger than the 18.3 mm body, for the hand.
+Plug envelope: from the flange front face to the end of the cable clamp the mated pair
+is 30.5 to 30.8 mm. The coupling ring is 18.3 mm OD, and the hand needs more room than
+that (8 mm free radius beyond the ring is a recommendation, NV).
 
 ### 11.5 Rules
 
@@ -884,7 +890,7 @@ swing diameter, larger than the 18.3 mm body, for the hand.
 | `GX-01` | A GX connector is declared as an off-board part with no board pads. A footprint with pads on a `GX*-offboard` declaration is an error. | `X-PAD-01` with `GX16-offboard` (pad count 0). | pads |
 | `GX-02` | The pigtail wire pads match the wire gauge (drill at least wire diameter plus 0.2 mm, NV) and the cable's conductors are labelled in `design.py` in the vendor's numbering. | Pad drill and the `design.py` cup-to-net table. | manual |
 | `GX-03` | The case wall opening is at least the thread major diameter plus 0.2 mm and not more than 1.0 mm over it, with an anti-rotation feature if the part has a flat. | Case `verify()`. | case |
-| `GX-04` | The case leaves the connector's rear length (35.5 mm for GX16) free inside the shell, or the cable is a pigtail that does not. | Case census. | case |
+| `GX-04` | The case leaves the socket's depth behind the panel (13.1 to 13.6 mm for GX16, tails included) free inside the shell, or the cable is a pigtail that does not. | Case census. | case |
 | `GX-05` | The solder-side wire has strain relief inside the shell (a clamp or a zip tie post). | Case feature check. | manual |
 
 ---

@@ -51,7 +51,7 @@ Run the gate yourself. Do not infer it.
 python3 scripts/kicad_gate.py PROJECT_DIR [--name NAME]
 ```
 
-Eight criteria, all required:
+Nine criteria, all required:
 
 1. **DRC 0 at error severity, with schematic parity.** Parity is not optional. A
    board can be geometrically perfect and wired to a netlist that is not the
@@ -139,6 +139,11 @@ Eight criteria, all required:
    `PARTS`, in footprint-local axes as the library draws the footprint. If a
    connector or user-facing part lacks them, that is a handback to the
    schematic phase, not a value you invent.
+
+9. **Wire-pad footprints for off-board parts:** clear `exclude_from_bom`
+   (`fp.SetExcludedFromBOM(False)`), keep `exclude_from_pos_files`, and drop a
+   model link that resolves to nothing. End `gen_pcb.py` with
+   `hw_stamp.stamp_file(out, design.py)`.
 
 ## Method
 

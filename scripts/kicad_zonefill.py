@@ -100,7 +100,7 @@ def fill(board_path, out_path=None, island_mode=None,
     zones = board.Zones()
     if not len(zones):
         if not quiet:
-            print("  no zones in %s — nothing to fill"
+            print("  no zones in %s: nothing to fill"
                   % os.path.basename(board_path))
         return 0
 

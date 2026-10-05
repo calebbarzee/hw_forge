@@ -187,6 +187,15 @@ because the board file carries neither (`templates/design.py`):
                       knob, a button's plunger), with optional `mating_z`
                       [lo, hi] above the mounting face.  Without it, the body
                       reaching furthest in the mating direction is used.
+    offboard          optional, for a part that lives on the enclosure and
+                      is wired to this board's pads (a panel connector on a
+                      pigtail, a capsule on leads): face, axis, at, datum,
+                      segments, margin_mm, pigtail, as the `offboard` record
+                      below.  It is carried into the contract's
+                      `offboard[]`, and `case_verify.py connector_openings`
+                      tests the opening against its body and mated plug and
+                      the pigtail length against the pad distance.  A
+                      malformed block is a FAIL.
 
 A footprint property of the same name (`mating_direction`, `height_mm`,
 `interface`, `access`) fills any key the PARTS row leaves unset.
@@ -264,6 +273,37 @@ Schema, version 1.  Stable: add keys, never rename or re-mean one.
                           span_points [[x, y], [x, y]], span_mm, z}, or for a
                           top/bottom face {face, bbox, z}
         verdict, reason   "PASS" | "FAIL" | "INFO"
+    offboard          one per design.py PARTS row with an `offboard` block:
+                      a part that lives off the board, on the enclosure (a
+                      panel connector wired by a pigtail to solder pads, a
+                      capsule on leads).  Its geometry is in the CASE frame,
+                      because no board coordinate describes it:
+      ref             the PARTS key
+      pads            ref of the board pad set it is wired to (default ref)
+      pads_xy         [x, y] board frame: centre of those pads, or null
+      what            free text, e.g. "GX16-4 male panel socket"
+      face            the enclosure face it mounts through, free text
+                      ("tail wall"), used in messages only
+      axis            outward normal of that face, case frame: [dx, dy, dz]
+      up              case-frame vector across the axis that a box
+                      segment's h runs along: [dx, dy, dz]
+      datum           name of a case datum (`datums=` in case_verify), or null
+      at              [X, Y, Z] mounting point, the centre of the opening on
+                      the face's outer surface; case frame, or an offset from
+                      the datum
+      segments        [{name, z: [lo, hi], d | w and h, mated}]: the body as
+                      coaxial pieces along the axis, z = 0 on the outer
+                      surface and positive outward.  A round piece has a
+                      diameter d, a rectangular one w by h.  `mated` marks
+                      the mating plug's envelope beyond the face.  A piece
+                      with z lo < 0 <= z hi crosses the wall: the opening
+                      must clear it.
+      margin_mm       clearance per side the opening must leave
+      pigtail         {length_mm, slack_mm, to_z} or null: the wire must
+                      reach from pads_xy to the axis point at z = to_z
+                      (default: the innermost segment end) with slack_mm to
+                      spare
+      source          "design.py PARTS['J1'].offboard"
     z_sources         {declared, step, none}: counts over non-inherent parts
     findings          [{severity, ref, message}], severity "FAIL" | "WARN"
 """
@@ -1060,6 +1100,124 @@ def load_design_tables(path, names=("PARTS", "BOARD_INHERENT")):
     return dict((n, getattr(module, n, {}) or {}) for n in names)
 
 
+_AXES = {"+x": (1.0, 0.0, 0.0), "-x": (-1.0, 0.0, 0.0),
+         "+y": (0.0, 1.0, 0.0), "-y": (0.0, -1.0, 0.0),
+         "+z": (0.0, 0.0, 1.0), "-z": (0.0, 0.0, -1.0)}
+
+
+def _vector(value):
+    """A unit 3-vector from "+x" style text or a list, or None."""
+    if isinstance(value, str):
+        return _AXES.get(value.strip().lower())
+    try:
+        v = [float(c) for c in value]
+    except (TypeError, ValueError):
+        return None
+    if len(v) != 3:
+        return None
+    n = math.sqrt(sum(c * c for c in v))
+    return tuple(round(c / n, 6) for c in v) if n > 1e-9 else None
+
+
+def offboard_pads(key, spec, by_ref, footprints):
+    """The footprints an offboard block's pads are on: `pads` (else the
+    PARTS key) as a reference, else every footprint whose value is that
+    name, the same ref-then-value order kicad_bom.kind_of uses."""
+    want = spec.get("pads") or key
+    if want in by_ref:
+        return [by_ref[want]]
+    return sorted((f for f in footprints if f.get("value") == want),
+                  key=lambda f: f["ref"])
+
+
+def offboard_record(key, spec, by_ref, footprints=()):
+    """([records], [problems]) for one PARTS[key]["offboard"] block: one
+    record per footprint it resolves to (by ref, then by value)."""
+    problems = []
+    source = "design.py PARTS[%r].offboard" % key
+    if not isinstance(spec, dict):
+        return [], ["%s must be a dict" % source]
+    axis = _vector(spec.get("axis"))
+    if axis is None:
+        problems.append("%s: axis %r is not +x -x +y -y +z -z or a "
+                        "3-vector" % (source, spec.get("axis")))
+    up = _vector(spec.get("up")) if spec.get("up") else None
+    if up is None and axis is not None:
+        up = (0.0, 1.0, 0.0) if abs(axis[2]) > 0.9 else (0.0, 0.0, 1.0)
+    at = spec.get("at")
+    try:
+        at = [float(c) for c in at]
+        if len(at) != 3:
+            raise ValueError
+    except (TypeError, ValueError):
+        problems.append("%s: at %r is not [X, Y, Z]" % (source, at))
+        at = None
+    segments = []
+    raw = spec.get("segments") or []
+    if not isinstance(raw, (list, tuple)):
+        problems.append("%s: segments must be a list" % source)
+        raw = []
+    for i, seg in enumerate(raw):
+        name = "segment %d" % i
+        try:
+            name = seg.get("name") or name
+            z = [float(seg["z"][0]), float(seg["z"][1])]
+            if z[1] <= z[0]:
+                raise ValueError
+            rec = {"name": name, "z": z, "mated": bool(seg.get("mated"))}
+            if seg.get("d") is not None:
+                rec["d"] = float(seg["d"])
+            else:
+                rec["w"], rec["h"] = float(seg["w"]), float(seg["h"])
+        except (KeyError, TypeError, ValueError, IndexError,
+                AttributeError):
+            problems.append("%s: segment %r needs z [lo, hi] with lo < hi "
+                            "and d, or w and h" % (source, name))
+            continue
+        segments.append(rec)
+    if not segments:
+        problems.append("%s: no usable segments: the body envelope is what "
+                        "the opening check tests" % source)
+    pads = spec.get("pads") or key
+    fps = offboard_pads(key, spec, by_ref, footprints)
+    if not fps:
+        problems.append("%s: pads %r is neither a reference nor a value of "
+                        "a footprint on this board" % (source, pads))
+    pig = spec.get("pigtail")
+    if pig is not None:
+        try:
+            body = [s for s in segments if not s["mated"]]
+            pig = {"length_mm": float(pig["length_mm"]),
+                   "slack_mm": float(pig.get("slack_mm", 0.0)),
+                   "to_z": float(pig["to_z"]) if pig.get("to_z") is not None
+                   else min(s["z"][0] for s in body) if body else 0.0}
+        except (KeyError, TypeError, ValueError):
+            problems.append("%s: pigtail needs length_mm (and optional "
+                            "slack_mm, to_z)" % source)
+            pig = None
+    try:
+        margin = float(spec.get("margin_mm", 0.30))
+    except (TypeError, ValueError):
+        problems.append("%s: margin_mm %r is not a number"
+                        % (source, spec.get("margin_mm")))
+        margin = 0.30
+    records = []
+    for fp in fps or [None]:
+        box = fp and (fp.get("pads_bbox") or fp.get("body_bbox"))
+        pads_xy = ([round((box[0] + box[2]) / 2.0, 4),
+                    round((box[1] + box[3]) / 2.0, 4)] if box
+                   else [fp["x"], fp["y"]] if fp else None)
+        records.append({
+            "ref": fp["ref"] if fp else key,
+            "pads": fp["ref"] if fp else pads, "pads_xy": pads_xy,
+            "what": spec.get("what"), "face": spec.get("face"),
+            "axis": list(axis) if axis else None,
+            "up": list(up) if up else None,
+            "datum": spec.get("datum"), "at": at, "segments": segments,
+            "margin_mm": margin, "pigtail": pig, "source": source})
+    return records, problems
+
+
 def part_entry(parts, ref, value):
     """The PARTS row for a part: by reference first, then by value."""
     if ref in parts:
@@ -1545,8 +1703,11 @@ def fit_contract(board_path, design_path=None, use_models=True):
     by_ref = dict((f["ref"], f) for f in board["footprints"])
 
     def inherent_kind(fp):
-        """design.py BOARD_INHERENT first, then kicad_bom.py's heuristic."""
+        """design.py BOARD_INHERENT first, then kicad_bom.py's heuristic.
+        `off_board` is a BOM kind, not board fabric: the pads stay a part."""
         kind = inherent.get(fp["ref"]) or inherent.get(fp["value"])
+        if kind == "off_board":
+            return None
         if kind:
             return kind
         for lib, k in (("MountingHole:", "mounting_hole"),
@@ -1647,6 +1808,19 @@ def fit_contract(board_path, design_path=None, use_models=True):
                                         "in design.py PARTS or link a STEP "
                                         "model" % role})
         parts.append(rec)
+    offboard = []
+    for key, entry in sorted(parts_table.items()):
+        if not isinstance(entry, dict) or not entry.get("offboard"):
+            continue
+        try:
+            recs, problems = offboard_record(key, entry["offboard"], by_ref,
+                                             board["footprints"])
+        except Exception as exc:                 # a malformed block fails
+            recs, problems = [], ["design.py PARTS[%r].offboard: %s: %s"
+                                  % (key, type(exc).__name__, exc)]
+        for msg in problems:
+            findings.append({"severity": "FAIL", "ref": key, "message": msg})
+        offboard.extend(recs)
     if z_counts["none"]:
         findings.append({"severity": "WARN", "ref": None,
                          "message": "%d of %d part(s) have no height source "
@@ -1669,6 +1843,7 @@ def fit_contract(board_path, design_path=None, use_models=True):
                       "cutouts": cutouts},
             "mounting_holes": mounting,
             "parts": parts,
+            "offboard": offboard,
             "z_sources": z_counts,
             "findings": findings}
 
@@ -1694,6 +1869,13 @@ def print_contract(contract, out_path):
               % (m["verdict"], p["ref"], (p["interface"] or p["role"]
                                           or "-")[:22],
                  m["direction_local"], m.get("wall") or "-", m["reason"]))
+    for o in contract.get("offboard") or []:
+        print("  offboard %-6s %s through %s, axis %s, %d segment(s)%s%s"
+              % (o["ref"], o.get("what") or "-", o.get("face") or "-",
+                 o.get("axis"), len(o["segments"]),
+                 ", datum %s" % o["datum"] if o.get("datum") else "",
+                 ", pigtail %.1f mm" % o["pigtail"]["length_mm"]
+                 if o.get("pigtail") else ""))
     connectors = [p for p in contract["parts"] if p.get("connector")]
     print("  connectors %d (%s)" % (len(connectors), ", ".join(
         p["ref"] for p in connectors)[:200] or "none on this board"))

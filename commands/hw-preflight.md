@@ -25,6 +25,9 @@ Python can import the project's design module, expected targets exist.
 scripts live next to it. Resolve `scripts/preflight.py` relative to the
 `hw-design` skill directory.)
 
+A Makefile WARN names the `diff -u` against templates/Makefile. An unresolved
+`${VAR}` in a library table is a WARN, never an ok.
+
 ## On success (exit 0)
 
 Report what it verified, in two or three lines. Name the versions it found:

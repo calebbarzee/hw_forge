@@ -89,6 +89,11 @@ The fix has two halves:
 2. **Have the gate assert the promotion before trusting a parity pass.**
    `kicad_gate.py` prints `parity UNENFORCED` and, with `--strict-parity`,
    fails.
+3. **On the forked `kicad-cli`, the project file no longer decides.**
+   `kicad_gate.py` passes `--severity-override KEY=LEVEL` for the five parity
+   keys and the scaffolder's fab promotions, at the levels
+   `hwforge-overrides.json` records, and prints `parity enforced (override)`.
+   The `.kicad_pro` promotion is still needed for the GUI and for stock.
 
 Demote one only as an explicit, justified decision, like any other severity
 override.

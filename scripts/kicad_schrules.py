@@ -25,8 +25,14 @@ and runs five rules over it:
                               (defaults: i2c 1 k to 10 k, reset 4.7 k to
                               100 k; `classes` in templates/sch-rules.json)
   connector_input_protection  a connector power-input net carries a fuse, a
-                              series inductor or bead, or a TVS diode
-                              (warning severity by default)
+                              series inductor or bead, a shunt TVS or zener
+                              (cathode on the input, anode on ground), a
+                              series diode (anode on the input, cathode on
+                              the far net, such as a reverse-polarity
+                              Schottky), or a series resistor of at most
+                              max_series_ohms into a power rail (warning
+                              severity by default).  A divider's top leg or
+                              a diode fitted backwards does not count.
 
 A part marked do-not-populate (the netlist's `dnp` property) is not fitted, so
 no rule counts it: its pins are dropped from every net before any rule runs,
@@ -695,6 +701,23 @@ def rule_open_drain_pullups(ctx):
     return out, "%d net(s) checked" % len(nets)
 
 
+def diode_pin_role(node):
+    """'K', 'A', 'bi' (one pin of a bidirectional TVS, named A1 or A2) or
+    None, from the pin name the netlist's libpart gives.  A pin with no name
+    falls back to the number, by KiCad's Device:D convention: pin 1 is K,
+    pin 2 is A."""
+    name = (node.name or "").strip().upper()
+    if name in ("K", "CATHODE"):
+        return "K"
+    if name in ("A", "ANODE"):
+        return "A"
+    if re.fullmatch(r"A\d", name):
+        return "bi"
+    if name in ("", "~"):
+        return {"1": "K", "2": "A"}.get(node.pin)
+    return None
+
+
 def rule_connector_input_protection(ctx):
     """Power-input connectors have a fuse, a TVS diode or a series element.
 
@@ -703,11 +726,69 @@ def rule_connector_input_protection(ctx):
     sch_rules.py: IEC 61000-4-2 ESD immunity; USB-IF ESD guidance; ST AN4275
     on TVS selection. A warning by default, because a module often carries
     the protection (`electronics.md` section 6).
+
+    What counts, so a part that merely touches the net does not:
+      * a fuse, inductor or bead on the net (by reference prefix);
+      * a shunt TVS or zener: a two-pin part with its cathode on the input
+        net and its anode on ground, or a bidirectional TVS (pins A1/A2)
+        with one pin on each; a part with more pins (a TVS array) needs a
+        pin on the input and a pin on ground;
+      * a series diode: anode on the input net, cathode on a net that is not
+        ground;
+      * a series resistor of at most max_series_ohms whose far net is a
+        power rail (it has a power_in pin, or its name matches
+        patterns.power_net).  A divider's top leg feeds a sense net, not a
+        rail, and does not count.
     """
     r = ctx.rule("connector_input_protection")
     diode = ctx.pre["diode"]
     diode = [diode] if isinstance(diode, str) else list(diode)
     tvs_prefixes = diode + list(r["tvs_prefixes"])
+    max_ohms = as_number(r["max_series_ohms"], "R")
+
+    def is_rail(net):
+        return not ctx.is_ground_net(net) and (
+            ctx.net_is("power_net", net) or bool(ctx.supply_pins(net)))
+
+    def shunt(n):
+        """A TVS or zener from the input pin `n` to ground, fitted the right
+        way round."""
+        c = n.comp
+        lib_part = "%s:%s" % (c.lib, c.part)
+        if not ((prefix_matches(tvs_prefixes, c.prefix)
+                 and (matches(ctx.pat["tvs_value"], c.value)
+                      or matches(ctx.pat["tvs_value"], c.part)))
+                or matches(r["shunt_diode_symbol"], lib_part)):
+            return False
+        grounded = [m for m in c.nodes
+                    if m is not n and ctx.is_ground_net(m.net)]
+        if not grounded:
+            return False
+        if len(c.nodes) != 2:
+            return True
+        return (diode_pin_role(n), diode_pin_role(grounded[0])) in (
+            ("K", "A"), ("bi", "bi"))
+
+    def series(n, net):
+        """A two-pin diode (anode on the input) or a low-value resistor
+        into a rail: a series element, not a shunt and not a divider."""
+        c = n.comp
+        if len(c.nodes) != 2:
+            return False
+        far_node = [m for m in c.nodes if m is not n][0]
+        far = far_node.net
+        if far is net or ctx.is_ground_net(far):
+            return False
+        if (prefix_matches(r["series_diode_prefixes"], c.prefix)
+                or matches(r["series_diode_symbol"],
+                           "%s:%s" % (c.lib, c.part))):
+            return (diode_pin_role(n), diode_pin_role(far_node)) == ("A",
+                                                                     "K")
+        if prefix_matches(r["series_resistor_prefixes"], c.prefix):
+            ohms = parse_value(c.value, "R")
+            return (ohms is not None and max_ohms is not None
+                    and ohms <= max_ohms and is_rail(far))
+        return False
     out = []
     checked = 0
     seen = set()
@@ -725,15 +806,18 @@ def rule_connector_input_protection(ctx):
                 if prefix_matches(r["fuse_prefixes"], c.prefix) \
                         or prefix_matches(r["series_prefixes"], c.prefix):
                     found.append(c.ref)
-                elif prefix_matches(tvs_prefixes, c.prefix) and (
-                        matches(ctx.pat["tvs_value"], c.value)
-                        or matches(ctx.pat["tvs_value"], c.part)):
+                elif shunt(n):
+                    found.append(c.ref)
+                elif series(n, net):
                     found.append(c.ref)
             if not found:
                 out.append(Finding(
                     "connector_input_protection", r["severity"],
-                    "Power input net '%s' on %s has no fuse, TVS diode or "
-                    "series element" % (net.name, comp.ref),
+                    "Power input net '%s' on %s has no fuse, bead, shunt "
+                    "TVS or zener (cathode on the input), series diode "
+                    "(anode on the input) or series resistor of at most %s "
+                    "into a rail" % (net.name, comp.ref,
+                                     fmt_si(max_ohms, "Ohm")),
                     [comp.ref], [net.name]))
     return out, "%d input net(s) checked" % checked
 
@@ -819,7 +903,8 @@ def validate(cfg):
                 % (name, r["severity"]))
         for key, val in r.items():
             if key.endswith("prefixes") or key in ("led_power_pin_names",
-                                                   "net_pattern"):
+                                                   "net_pattern",
+                                                   "series_diode_symbol"):
                 check_regex("%s.%s" % (name, key), val)
         for w in r["waive"]:
             if not (isinstance(w, dict) and w.get("match")
@@ -967,16 +1052,18 @@ def load_netlist(sch, netlist_xml):
 # ------------------------------------------------------------------ selftest
 
 def _synthetic(comps, nets, dnp=()):
-    """kicadxml text from {ref: (value, part)} and {net: [(ref, pin, name,
+    """kicadxml text from {ref: (value, part[, lib])} and {net: [(ref, pin, name,
     pintype)]}. No libparts: pin names come from pinfunction. Refs in `dnp`
     carry the do-not-populate property, as KiCad 10 writes it."""
     root = ET.Element("export")
     ET.SubElement(ET.SubElement(root, "design"), "tool").text = "selftest"
     cs = ET.SubElement(root, "components")
-    for ref, (value, part) in comps.items():
+    for ref, spec in comps.items():
+        value, part = spec[0], spec[1]
+        lib = spec[2] if len(spec) > 2 else "L"
         c = ET.SubElement(cs, "comp", ref=ref)
         ET.SubElement(c, "value").text = value
-        ET.SubElement(c, "libsource", lib="L", part=part)
+        ET.SubElement(c, "libsource", lib=lib, part=part)
         if ref in dnp:
             ET.SubElement(c, "property", name="dnp")
     ns = ET.SubElement(root, "nets")
@@ -1051,9 +1138,21 @@ def selftest():
         "R7": ("100k", "r"), "R8": ("1k", "r"),
         "C4": ("470", "c"),                    # no unit: unparseable
         "C9": ("10u", "c"),                    # DNP: must not count
+        # connector inputs: a series Schottky by symbol (prefix not D), a
+        # series resistor, and a shunt diode to ground that does not count
+        "J3": ("RAW", "conn"), "CR5": ("1N5819", "D_Schottky", "Device"),
+        "J4": ("BAT", "conn"), "R9": ("10", "r"),
+        "D6": ("1N4148", "d"),
+        # must warn: a divider's top leg into a sense net, a series diode
+        # fitted backwards, a TVS fitted backwards
+        "J5": ("BAT", "conn"), "R10": ("10", "r"), "R11": ("100k", "r"),
+        "J6": ("BAT", "conn"), "D7": ("1N5819", "D", "Device"),
+        "J7": ("BAT", "conn"), "D8": ("SMAJ5.0A", "tvs"),
     }
     nets = {
         "GND": [("U1", "2", "GND", "power_in"), ("C1", "2", "~", "passive"),
+                ("D6", "2", "A", "passive"), ("D1", "2", "A", "passive"),
+                ("R11", "2", "~", "passive"), ("D8", "1", "K", "passive"),
                 ("C2", "2", "~", "passive"), ("C3", "2", "~", "passive"),
                 ("C4", "2", "~", "passive"), ("C9", "2", "~", "passive"),
                 ("R5", "2", "~", "passive"), ("J1", "9", "GND", "passive")],
@@ -1061,7 +1160,8 @@ def selftest():
                 ("C2", "1", "~", "passive"),
                 ("LED1", "1", "VDD", "power_in"),
                 ("R3", "2", "~", "passive"), ("R4", "2", "~", "passive"),
-                ("R7", "2", "~", "passive"), ("R8", "2", "~", "passive")],
+                ("R7", "2", "~", "passive"), ("R8", "2", "~", "passive"),
+                ("R9", "2", "~", "passive")],
         "VX": [("U2", "1", "VCC", "power_in"), ("C3", "1", "~", "passive"),
                ("C4", "1", "~", "passive")],
         "VY": [("U3", "1", "VCC", "power_in"), ("C9", "1", "~", "passive")],
@@ -1073,7 +1173,19 @@ def selftest():
                    ("R3", "1", "~", "passive")],
         "SCL": [("U1", "6", "SCL", "bidirectional"),
                 ("R4", "1", "~", "passive")],
-        "BAT_P": [("J1", "1", "VBAT", "passive")],
+        "BAT_P": [("J1", "1", "VBAT", "passive"),
+                  ("D6", "1", "K", "passive")],
+        "RAW": [("J3", "1", "VIN", "passive"), ("CR5", "2", "A", "passive")],
+        "RAW_D": [("CR5", "1", "K", "passive")],
+        "BAT2": [("J4", "1", "VIN", "passive"), ("R9", "1", "~", "passive")],
+        "BAT_DIV": [("J5", "1", "VIN", "passive"),
+                    ("R10", "1", "~", "passive")],
+        "VSENSE": [("R10", "2", "~", "passive"), ("R11", "1", "~", "passive"),
+                   ("U1", "8", "ADC", "input")],
+        "BAT_REV": [("J6", "1", "VIN", "passive"), ("D7", "1", "K", "passive")],
+        "BAT_REV_D": [("D7", "2", "A", "passive")],
+        "BAT_TVSREV": [("J7", "1", "VIN", "passive"),
+                       ("D8", "2", "A", "passive")],
         "VIN": [("J2", "1", "VIN", "passive"), ("D1", "1", "K", "passive")],
         "D_DIRECT": [("U1", "3", "IO3", "bidirectional"),
                      ("LED1", "4", "DIN", "input")],
@@ -1114,9 +1226,18 @@ def selftest():
     check("pullups: SDA 4k7 and nRESET 100k pass; SCL 100k (i2c) and "
           "RESET 1k (reset) fail", base["open_drain_pullups"][0],
           [["RESET"], ["SCL"]])
-    check("protection: BAT_P warns, VIN has a TVS",
-          (base["connector_input_protection"][0],
-           base["connector_input_protection"][1]), ([["BAT_P"]], ["warning"]))
+    check("protection: BAT_P warns (a shunt diode is not series), BAT_DIV "
+          "warns (a divider's 10 ohm top leg feeds a sense net, not a "
+          "rail), BAT_REV warns (series diode cathode on the input), "
+          "BAT_TVSREV warns (TVS anode on the input); VIN has a TVS K to "
+          "input A to ground, RAW a series Device:D symbol anode on the "
+          "input, BAT2 a 10 ohm series resistor into the 3V3 rail",
+          sorted(base["connector_input_protection"][0]),
+          [["BAT_DIV"], ["BAT_P"], ["BAT_REV"], ["BAT_TVSREV"]])
+    check("protection: max_series_ohms=4.7 drops BAT2's 10 ohm resistor",
+          ["BAT2"] in run_rules(["connector_input_protection."
+                                 "max_series_ohms=4.7"])
+          ["connector_input_protection"][0], True)
     check("waiver moves a finding", run_rules(
         waive=("bulk_capacitance", {"match": "^VX$", "reason": "t"}))
         ["bulk_capacitance"][0:3:2], ([["VY"]], [["VX"], ["VX"]]))

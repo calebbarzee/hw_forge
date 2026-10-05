@@ -154,6 +154,9 @@ ERC is KiCad's electrical rule check. DRC is its design rule check on a board.
    output lists it with its reason. Lowering a severity or disabling a rule to
    reach exit 0 is the same fault as demoting an ERC rule without a comment.
 
+8. **End `gen_sch.py` with `hw_stamp.stamp_file(out, design.py)`.** Off-board
+   pad sets stay `in_bom yes`.
+
 ## Rules
 
 - Read `references/electronics.md` before deciding power topology, and recall

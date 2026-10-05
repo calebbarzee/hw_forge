@@ -633,7 +633,7 @@ def check(outdir, name, layers, assertions):
         # The process change.  Routed to its own bucket whether or not it was
         # acknowledged: acknowledging it decides the exit status, never whether
         # it is said out loud.
-        line = ("%s was declared EMPTY and now defines %d aperture(s) — this "
+        line = ("%s was declared EMPTY and now defines %d aperture(s): this "
                 "board needs a %s-side stencil and a %s-side reflow pass it "
                 "did not need before" % (layer, counts[layer], side, side))
         if layer in because:
@@ -641,7 +641,7 @@ def check(outdir, name, layers, assertions):
         if layer not in acknowledged:
             # One short line in the failure list; the detail lives in the
             # process-change section, so the two are not printed twice.
-            fails.append("%s: PROCESS CHANGE, not a count to edit — see below. "
+            fails.append("%s: PROCESS CHANGE, not a count to edit: see below. "
                          "Acknowledge it by\n      adding %r to "
                          "\"became_populated\" in the profile, or drop it from "
                          "expect_empty_layers\n      once the new process is "
@@ -661,13 +661,13 @@ def check(outdir, name, layers, assertions):
         # a process change and just as easy to read as a plotting failure.
         side = paste_side(layer)
         if side is not None and declared:
-            changes.append("%s is now EMPTY — no %s-side stencil and no "
+            changes.append("%s is now EMPTY: no %s-side stencil and no "
                            "%s-side reflow pass is needed any more; every SMD "
                            "part is on the other face" % (layer, side, side))
         if declared:
             fails.append(line + " and is not in expect_empty_layers")
         else:
-            notes.append(line + " — declare it in expect_empty_layers if "
+            notes.append(line + ": declare it in expect_empty_layers if "
                                 "that is intended")
     return fails, notes, changes
 
@@ -699,7 +699,7 @@ def gate_verdict(project_dir, pcb):
     for base in ("erc.json", "drc.json"):
         path = os.path.join(project_dir, base)
         if not os.path.exists(path):
-            lines.append("  %-9s ABSENT — no gate report beside the project"
+            lines.append("  %-9s ABSENT: no gate report beside the project"
                          % base)
             continue
         try:
@@ -721,7 +721,7 @@ def gate_verdict(project_dir, pcb):
 def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
                    profile, bom_stats, fails, notes, cli, changes=()):
     """Stamp the provenance of this export into the output directory."""
-    lines = ["# %s — fab package manifest" % name,
+    lines = ["# %s: fab package manifest" % name,
              "# Written by hw_forge scripts/kicad_fab.py. A directory of "
              "gerbers is not",
              "# self-evidently a plot of a validated board; this file is the "
@@ -736,7 +736,7 @@ def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
              "schematic    %s" % os.path.basename(sch),
              "  sha256     %s" % sha256(sch),
              "profile      %s" % (os.path.abspath(profile_path)
-                                  if profile_path else "NONE — "
+                                  if profile_path else "NONE: "
                                   "non-emptiness only"),
              ]
     if profile_path:
@@ -762,7 +762,7 @@ def write_manifest(path, project_dir, name, sch, pcb, layers, profile_path,
     # changed, and that is not the same class of fact as a count that moved.
     if changes:
         lines.append("")
-        lines.append("PROCESS CHANGE — this package is not assembled the way "
+        lines.append("PROCESS CHANGE: this package is not assembled the way "
                      "the previous one was:")
         for line in changes:
             lines.append("  %s" % line.replace("\n            ", "\n    "))
@@ -850,7 +850,7 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
     for ref, placed, pads, lib in flipped:
         grouped.setdefault((lib, placed, pads), []).append(ref)
     for (lib, placed, pads), refs in sorted(grouped.items()):
-        notes.append("%s (%s) placed %s, every pad %s — SOLDER ON THE %s"
+        notes.append("%s (%s) placed %s, every pad %s: SOLDER ON THE %s"
                      % (collapse(refs), lib, placed, pads, pads.upper()))
 
     write_manifest(os.path.join(outdir, name + "-manifest.txt"), project_dir,
@@ -872,7 +872,7 @@ def fab(project_dir, outdir, profile=None, name=None, cli=None, no_x2=False,
     # split is printed beside it because that is the number that explains it.
     # It is the last thing on screen whether the export passed or failed.
     if changes:
-        print("  PROCESS CHANGE (%d) — answer this before exporting again: "
+        print("  PROCESS CHANGE (%d): answer this before exporting again: "
               "did the number of\n  reflow passes change?" % len(changes))
         for line in changes:
             print("    %s" % line)
@@ -917,7 +917,7 @@ def main():
                 raise SystemExit(
                     "error: the profile lives inside the output directory\n"
                     "  profile: %s\n"
-                    "  outdir:  %s (wiped on every run — the profile would be "
+                    "  outdir:  %s (wiped on every run: the profile would be "
                     "deleted)\n"
                     "  fix: keep the profile next to the board project, "
                     "<project_dir>/fab-profile.json"

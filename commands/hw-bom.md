@@ -37,6 +37,9 @@ two rulebooks and names the rule that fired:
 Expect many FAILs on a project whose schematic predates this doctrine. That
 is the finding, not a bug in the check.
 
+A pigtail or lead pad set is kind `off_board`: its row is the off-board part,
+sourced like any other.
+
 ## 2. Research each failing sourced part
 
 For every sourced part the audit flagged, research its fields with the
@@ -46,6 +49,11 @@ which source gave which fact. Two independent sources are not required
 here the way they are for a pin table, since a description and a part number are
 lower-stakes than a pinout, but a manufacturer datasheet always outranks a
 distributor's own paraphrase of it.
+
+Before writing an `lcsc`, `digikey`, or `mouser` key, load
+`skills/hw-design/references/sourcing.md`. It covers how to find a candidate
+number, verify it against a detail endpoint, and what to do when a distributor
+refuses the request.
 
 Local machine first, same as any other research task: another project on
 this disk may already carry the same part's fields in its own `design.py`.
